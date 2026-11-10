@@ -4,6 +4,7 @@ Research and recommendation for an AI-friendly document store for a law firm
 (100 GB+ of e-mail, SharePoint and file-share content, indexed by client,
 handler and case type, searchable by humans and AI agents).
 
+- **PoC design docs:** [`docs/README.md`](docs/README.md) is the entry point for the success criteria, the feature catalogue and the hexagonal architecture map. Every item has a stable, linkable ID.
 - **Report:** [`reports/Law firm AI document store options.md`](reports/Law%20firm%20AI%20document%20store%20options.md)
 - **Research notes** (one file per track, with inline sources):
   `research_notes/Law firm AI document store options/`
