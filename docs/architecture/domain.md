@@ -81,13 +81,13 @@ classDiagram
 
 A configured content origin ([GL-01](../README.md#gl-01)). Created and changed by [CMD-01](application.md#cmd-01).
 
-- <a id="dm-01-1"></a>**DM-01.1 Fields.** `source_id`, `name` (unique), `kind` ∈ {`filesystem`, `sharepoint`, `pst`}, `settings` (kind-specific JSON, schema in [CMD-01](application.md#cmd-01)), `settings_hash` (sha256 of canonical settings JSON), `unassigned_access_group` (the group that may see this source's documents while they have no accepted matter, see [DM-16.7](#dm-16-7)), `consent_reference` ([DM-01.5](#dm-01-5)), `enabled`.
+- <a id="dm-01-1"></a>**DM-01.1 Fields.** `source_id`, `name` (unique), `kind` ∈ {`filesystem`, `sharepoint`, `pst`}, `settings` (kind-specific JSON, schema in [CMD-01](application.md#cmd-01)), `settings_hash` (sha256 of canonical settings JSON), `unassigned_access_group` (the group that may see this source's documents while they have no accepted matter, see [DM-16.7](#dm-16-7)), `data_use_reference` ([DM-01.5](#dm-01-5)), `enabled`.
 - <a id="dm-01-2"></a>**DM-01.2 Discovery cursor.** `cursor` (opaque connector token, shaped by the connector adapter behind [PORT-16](ports-adapters.md#port-16)), `cursor_settings_hash`, `cursor_updated_at`. The cursor is the position after the last committed discovery page ([CMD-04](application.md#cmd-04)).
 - <a id="dm-01-3"></a>**DM-01.3 Invariant: cursor validity.** A cursor is valid only while `cursor_settings_hash = settings_hash`. A settings change that alters scope clears the cursor, so the next run does full discovery.
 - <a id="dm-01-4"></a>**DM-01.4 Invariant: disabled sources.** A source with `enabled = false` accepts no new ingestion run ([DM-17.6](#dm-17-6)).
-- <a id="dm-01-5"></a>**DM-01.5 Invariant: consent.** `consent_reference` is required and non-empty: a reference to the record that the data is sample data or that its use is consented ([SCOPE-04](../README.md#scope-04)).
+- <a id="dm-01-5"></a>**DM-01.5 Invariant: data-use authorisation.** `data_use_reference` is required and non-empty: a reference to the DPIA record covering this source, or a sample-data declaration ([SCOPE-04.6](../README.md#scope-04-6)).
 
-Refs: [DM-02](#dm-02), [PORT-16](ports-adapters.md#port-16)
+Refs: [DM-02](#dm-02), [PORT-16](ports-adapters.md#port-16), [SCOPE-04](../README.md#scope-04)
 
 <a id="dm-02"></a>
 ### DM-02 SourceItem
@@ -97,14 +97,14 @@ One discovered object in a source ([GL-02](../README.md#gl-02)), kept as its own
 - <a id="dm-02-1"></a>**DM-02.1 Identity.** `source_item_id`, `source_id`, `source_key`, unique per (`source_id`, `source_key`). `source_key` is stable across runs and unique per source; the domain treats it as opaque. The formats are per connector ([ADP-17.2](ports-adapters.md#adp-17-2), [ADP-18.2](ports-adapters.md#adp-18-2), [ADP-19.1](ports-adapters.md#adp-19-1)), except for container children, whose key is `<parent source_key>/att/<ordinal>` ([CMD-06](application.md#cmd-06)).
 - <a id="dm-02-2"></a>**DM-02.2 Change fingerprint.** `fingerprint` (opaque; changes when content or metadata change; the formats are per connector, see [ADP-17.2](ports-adapters.md#adp-17-2), [ADP-18.2](ports-adapters.md#adp-18-2), [ADP-19.2](ports-adapters.md#adp-19-2), [ADP-19.3](ports-adapters.md#adp-19-3); for a child it is the parent sha256 and ordinal), `revision` (incremented whenever the fingerprint changes), `removed_at_source_at` (set when the source reports deletion).
 - <a id="dm-02-3"></a>**DM-02.3 Source metadata.** `display_path`, `source_meta` (JSON: SharePoint site, library and column values; PST folder path and mailbox owner; file owner), `parent_source_item_id`, `container_ordinal`, `document_id` (set once the item is fetched, [CMD-05](application.md#cmd-05)), `last_run_id`.
-- <a id="dm-02-4"></a>**DM-02.4 Stage state.** `stages`: a map from stage key ([DM-02.5](#dm-02-5)) to {`status`, `attempts`, `last_error_class`, `last_error`, `updated_at`, `output_ref`}. Status values are [DM-02.6](#dm-02-6).
-- <a id="dm-02-5"></a>**DM-02.5 Stage keys.** `fetch` [ING-02](ingestion.md#ing-02), `dedup` [ING-03](ingestion.md#ing-03), `expand` [ING-04](ingestion.md#ing-04), `extract` [ING-05](ingestion.md#ing-05), `ocr` [ING-06](ingestion.md#ing-06), `link` [ING-07](ingestion.md#ing-07), `neardup` [ING-08](ingestion.md#ing-08), `rules` [ING-09](ingestion.md#ing-09), `enrich` [ING-10](ingestion.md#ing-10), `reconcile` [ING-11](ingestion.md#ing-11), `chunk` [ING-12](ingestion.md#ing-12), `embed` [ING-13](ingestion.md#ing-13), `index` [ING-14](ingestion.md#ing-14). The order is the pipeline order defined in [WF-02](ingestion.md#wf-02).
-- <a id="dm-02-6"></a>**DM-02.6 Stage status values.** `pending`, `done`, `skipped` (not applicable, for example `ocr` on a born-digital file or `enrich` on an e-mail-identity duplicate), `failed` (retryable), `quarantined` (terminal until reprocessed), `excluded` (terminal; an exclude rule of the source settings matched, named in `excluded_by`; set on `fetch` by [CMD-04](application.md#cmd-04), later stages stay unset). Error classes come from [XC-05](overview.md#xc-05).
-- <a id="dm-02-7"></a>**DM-02.7 Invariant: stage order.** A stage can be `done` only if every earlier stage is `done` or `skipped`.
-- <a id="dm-02-8"></a>**DM-02.8 Invariant: revision reset.** A new `revision` resets every stage to `pending`. A stage that is `done` for the current revision is never executed again, except by explicit reprocessing ([CMD-25](application.md#cmd-25)).
+- <a id="dm-02-4"></a>**DM-02.4 Stage state.** `stages`: a map from stage key ([DM-02.5](#dm-02-5)) to {`status`, `attempts`, `last_error_class`, `last_error`, `updated_at`, `output_ref`, `run_id` (the run that last reset or handed off the stage), `handed_off_at` (stage-2 stages only, set by the handoff of [ING-14.4](ingestion.md#ing-14-4))}. Status values are [DM-02.6](#dm-02-6).
+- <a id="dm-02-5"></a>**DM-02.5 Stage keys.** `fetch` [ING-02](ingestion.md#ing-02), `dedup` [ING-03](ingestion.md#ing-03), `expand` [ING-04](ingestion.md#ing-04), `extract` [ING-05](ingestion.md#ing-05), `ocr` [ING-06](ingestion.md#ing-06), `link` [ING-07](ingestion.md#ing-07), `neardup` [ING-08](ingestion.md#ing-08), `rules` [ING-09](ingestion.md#ing-09), `reconcile` [ING-11](ingestion.md#ing-11), `chunk` [ING-12](ingestion.md#ing-12), `embed` [ING-13](ingestion.md#ing-13), `index` [ING-14](ingestion.md#ing-14), `enrich` [ING-10](ingestion.md#ing-10), `llm_reconcile` [ING-19](ingestion.md#ing-19), `meta_index` [ING-20](ingestion.md#ing-20). The keys are grouped into stage 1 and stage 2 by [ING-21.1](ingestion.md#ing-21-1); their order is the step order of [WF-02.2](ingestion.md#wf-02-2) and [WF-07.2](ingestion.md#wf-07-2).
+- <a id="dm-02-6"></a>**DM-02.6 Stage status values.** `waiting` (stage-2 stages only: not yet handed off; set `pending` by the stage-1 handoff of [ING-14.4](ingestion.md#ing-14-4) or by a selection-mode enrich run, [CMD-28](application.md#cmd-28)), `pending`, `done`, `skipped` (not applicable, for example `ocr` on a born-digital file; for stage-2 stages, a duplicate, a `no_text` document or an enrichment that is already current), `failed` (retryable), `quarantined` (terminal until reprocessed), `excluded` (terminal; an exclude rule of the source settings matched, named in `excluded_by`; set on `fetch` by [CMD-04](application.md#cmd-04), later stages stay unset). Error classes come from [XC-05](overview.md#xc-05).
+- <a id="dm-02-7"></a>**DM-02.7 Invariant: stage order.** Within a stage group ([ING-21.1](ingestion.md#ing-21-1)), a stage can be `done` only if every earlier stage of that group is `done` or `skipped`. Stage-2 stages additionally require stage-1 `index` to be `done`. No stage-1 stage ever depends on a stage-2 stage.
+- <a id="dm-02-8"></a>**DM-02.8 Invariant: revision reset.** A new `revision` resets every stage-1 stage to `pending` and every stage-2 stage to `waiting`. A stage that is `done` for the current revision is never executed again, except by explicit reprocessing ([CMD-25](application.md#cmd-25)).
 - <a id="dm-02-9"></a>**DM-02.9 Invariant: quarantine.** `quarantined` requires `last_error_class` and `last_error`. It is cleared only by reprocessing or a new revision.
 
-Refs: [DM-01](#dm-01), [DM-03](#dm-03), [ING-18](ingestion.md#ing-18)
+Refs: [DM-01](#dm-01), [DM-03](#dm-03), [ING-18](ingestion.md#ing-18), [ING-21](ingestion.md#ing-21)
 
 <a id="dm-03"></a>
 ### DM-03 Document (aggregate root)
@@ -140,9 +140,9 @@ stateDiagram-v2
 
 - <a id="dm-03-11"></a>**DM-03.11 Invariant: one document per sha256.** `sha256` is unique and immutable. A byte-identical copy found at another location adds a location and never creates a second document.
 - <a id="dm-03-12"></a>**DM-03.12 Invariant: family shape.** A child has exactly one parent, the parent is an `email` or a container, the family graph has no cycles, the nesting depth is at most 5, and every member's `family_id` equals the root's `document_id`.
-- <a id="dm-03-13"></a>**DM-03.13 Invariant: searchable.** A document is searchable only if `status = indexed`, `active_chunk_generation` is set, and every chunk of that generation has an embedding from the configured model ([DM-05.6](#dm-05-6)). The exception is `no_text` documents, which are indexed on metadata only and have no chunks.
+- <a id="dm-03-13"></a>**DM-03.13 Invariant: searchable.** A document is searchable only if `status = indexed`, `active_chunk_generation` is set, and every chunk of that generation has an embedding from the configured model ([DM-05.6](#dm-05-6)). The exception is `no_text` documents, which are indexed on metadata only and have no chunks. Searchability never depends on enrichment: stage-2 status has no effect on this invariant ([ING-21](ingestion.md#ing-21)).
 - <a id="dm-03-14"></a>**DM-03.14 Invariant: access keys.** `access_keys` are recomputed in the same transaction as any change to accepted matter assignments, and are copied to all chunks in that transaction ([DM-05.7](#dm-05-7)).
-- <a id="dm-03-15"></a>**DM-03.15 Version stamps.** `parser_version`, `ocr_version`, `near_dup_algo_version`, `ruleset_version`, `prompt_version`, `llm_model`, `chunker_version`, `embedding_model`. Each stamp is written only by the command that produces the derived data. Stale-stamp detection is governed by [XC-06](overview.md#xc-06).
+- <a id="dm-03-15"></a>**DM-03.15 Version stamps.** `parser_version`, `ocr_version`, `near_dup_algo_version`, `ruleset_version`, `prompt_version`, `llm_model`, `chunker_version`, `embedding_model`. Each stamp is written only by the command that produces the derived data. The stage-2 `enrichment_version` (hash of `prompt_version` and `llm_model`) is derived from these stamps, not stored separately on the document. Stale-stamp detection is governed by [XC-06](overview.md#xc-06).
 - <a id="dm-03-16"></a>**DM-03.16 Invariant: duplicates are not indexed.** A document with `status = duplicate` has no chunks, is not enriched, and contributes its locations and `mailbox_owner` as additional facts to the canonical member's rule evaluation ([DM-04.6](#dm-04-6)).
 - <a id="dm-03-17"></a>**DM-03.17 Rule: document date.** `document_date` is the first of these that is available: `sent_at`; the accepted enrichment key date of kind `document_date` ([DM-12](#dm-12)); `created_at_source`; `modified_at_source`.
 
@@ -169,7 +169,9 @@ A token-bounded span of a document's text ([GL-06](../README.md#gl-06)), stored 
 
 - <a id="dm-05-1"></a>**DM-05.1 Fields.** `chunk_id`, `document_id`, `generation`, `ordinal`, `char_start`, `char_end`, `page_from`, `page_to`, `token_count`, `text`, `section_hint` (heading, e-mail part or sheet name).
 - <a id="dm-05-2"></a>**DM-05.2 Embedding fields.** `embedding` (`halfvec(1024)`, nullable until [CMD-14](application.md#cmd-14)), `embedding_model` (format of [XC-06.1](overview.md#xc-06-1)), `embedded_at` ([GL-07](../README.md#gl-07)).
-- <a id="dm-05-3"></a>**DM-05.3 Denormalised filter keys.** `access_keys[]`, `client_ids[]`, `matter_ids[]`, `handler_ids[]`, `case_type`, `doc_type`, `tags[]`, `document_date`, `source_id`, `is_canonical`, `format_class` ([TAX-06](#tax-06)), `from_addr`, `participant_addrs[]` (lower-cased sender and all recipient addresses of an e-mail). These are copies of document values, written for single-table filtering in the read model ([ADP-09](ports-adapters.md#adp-09)).
+- <a id="dm-05-3"></a>**DM-05.3 Denormalised filter keys.** Copies of document values, written for filtering in the read model ([ADP-09](ports-adapters.md#adp-09)), in two groups:
+  - Chunk-level keys, on every chunk row: `access_keys[]`, `client_ids[]`, `matter_ids[]`, `source_id`, `is_canonical`, `format_class` ([TAX-06](#tax-06)), `from_addr`, `participant_addrs[]` (lower-cased sender and all recipient addresses of an e-mail).
+  - Document-level keys, once per document in the narrow read-model table `document_enrichment_keys` ([ADP-09.5](ports-adapters.md#adp-09-5)), which search joins by `document_id`: `handler_ids[]`, `case_type`, `doc_type`, `tags[]`, `document_date`, `enrichment_version` (null until stage 2 completes for the active text; written by [ING-20](ingestion.md#ing-20), and lets search show `enrichment_pending`). Stage 2 writes only this group, so it never updates `chunks` ([ADR-17.2](decisions.md#adr-17-2)).
 - <a id="dm-05-4"></a>**DM-05.4 Invariant: contiguity.** Within one generation, ordinals run from 0 to n-1, offsets lie within the text, `char_start` never decreases, and `token_count` does not exceed the chunker maximum.
 - <a id="dm-05-5"></a>**DM-05.5 Invariant: generation consistency.** All chunks in a generation come from the same `text_sha256` and `chunker_version`. A document has at most one active and one pending generation.
 - <a id="dm-05-6"></a>**DM-05.6 Invariant: one embedding space.** Vectors are compared only when their `embedding_model` values are identical. The vector dimension must equal the model's declared dimension ([PORT-12](ports-adapters.md#port-12)).
@@ -242,9 +244,12 @@ A link from a document to a client, matter, handler or case type ([GL-12](../REA
   4. `llm`-only proposals for `client` or `matter` are never auto-accepted. At or above the review threshold they open an `llm_only` review task; below it they are `rejected` and kept for evaluation.
   5. `llm`-only proposals for `handler` and `case_type` are auto-accepted at or above the threshold, because they do not affect access. Exception: when a matter is accepted, the case type is inherited from the matter, and an LLM case type that differs is recorded as `superseded`.
   6. When no matter is accepted and no candidate reaches the review threshold, the document stays unassigned, visible only through the source key ([DM-16.7](#dm-16-7)), and an `unassigned` review task with priority `low` is opened ([DM-13.2](#dm-13-2)).
-- <a id="dm-10-7"></a>**DM-10.7 Invariant: history.** Assignments are never deleted. Replaced ones become `superseded`, and the [EVT-04](#evt-04) trail records each change.
 
-Refs: [DM-11](#dm-11), [TAX-04](#tax-04), [ADR-08](decisions.md#adr-08)
+  The policy is applied identically in stage 1 (before chunking, [ING-11](ingestion.md#ing-11)) and again in stage 2 ([ING-19](ingestion.md#ing-19)). The LLM never changes the confidence of a `rule` or `inherited` proposal (rule 2), so it cannot lift one over the auto-accept threshold ([DM-10.8](#dm-10-8)).
+- <a id="dm-10-7"></a>**DM-10.7 Invariant: history.** Assignments are never deleted. Replaced ones become `superseded`, and the [EVT-04](#evt-04) trail records each change.
+- <a id="dm-10-8"></a>**DM-10.8 Invariant: stage-2 access safety.** Because `llm` proposals for `client` and `matter` are never auto-accepted ([DM-10.6](#dm-10-6) rule 4) and rank below `rule`, `inherited` and `human` ([DM-10.2](#dm-10-2)), stage-2 reconciliation ([ING-19](ingestion.md#ing-19)) can never change accepted client or matter assignments, and so never changes `access_keys` ([DM-03.14](#dm-03-14), [LLM-06.4](ingestion.md#llm-06-4)).
+
+Refs: [DM-11](#dm-11), [TAX-04](#tax-04), [ADR-08](decisions.md#adr-08), [ING-19](ingestion.md#ing-19)
 
 <a id="dm-11"></a>
 ### DM-11 Provenance (value object)
@@ -260,7 +265,7 @@ Refs: [LLM-04](ingestion.md#llm-04), [XC-06](overview.md#xc-06), [TAX-04](#tax-0
 <a id="dm-12"></a>
 ### DM-12 Enrichment
 
-LLM-derived attributes of one document text version ([GL-15](../README.md#gl-15)), recorded by [CMD-11](application.md#cmd-11). The field set mirrors the output schema of [LLM-03](ingestion.md#llm-03); this item owns how the fields are held and protected.
+LLM-derived attributes of one document text version ([GL-15](../README.md#gl-15)), recorded by [CMD-11](application.md#cmd-11) in stage 2 ([WF-07](ingestion.md#wf-07)), after the document is already searchable. The field set mirrors the output schema of [LLM-03](ingestion.md#llm-03); this item owns how the fields are held and protected.
 
 - <a id="dm-12-1"></a>**DM-12.1 Fields.** `document_id`, `text_sha256`, `status` ∈ {`ok`, `invalid_output`, `skipped`}, `fields`: a map from each [LLM-03](ingestion.md#llm-03) field name to an EnrichedValue, `superseded_at`.
 - <a id="dm-12-2"></a>**DM-12.2 EnrichedValue.** `value`, `confidence`, `provenance` ([DM-11](#dm-11)), `state` ∈ {`auto_accepted`, `pending_review`, `rejected`, `human`}, `locked`.
@@ -293,7 +298,7 @@ stateDiagram-v2
   dismissed --> [*]
 ```
 
-- <a id="dm-13-4"></a>**DM-13.4 Invariant: one open task per subject.** At most one `open` or `claimed` task exists per (`document_id`, `subject`). A further flag on the same subject appends a comment and adds candidates.
+- <a id="dm-13-4"></a>**DM-13.4 Invariant: one open task per subject.** At most one `open` or `claimed` task exists per (`document_id`, `subject`). A further flag on the same subject appends a comment and adds candidates. A later reconciliation on the same subject (for example stage 2 after stage 1) updates the open task in place: it adds candidates and raises `reason` and `priority` to the highest of the old and new reasons ([DM-13.2](#dm-13-2)).
 - <a id="dm-13-5"></a>**DM-13.5 Invariant: resolution content.** `resolved` requires a decision (`accept_candidate`, `override` or `superseded`) and a resolver. `dismissed` requires a comment. Terminal states are final.
 
 Refs: [DM-10](#dm-10), [DM-12](#dm-12), [TAX-04](#tax-04), [EVT-06](#evt-06)
@@ -318,7 +323,7 @@ Versioned deterministic assignment rules. Published by [CMD-24](application.md#c
 
 - <a id="dm-15-1"></a>**DM-15.1 Fields.** `ruleset_version` (integer, starts at 1), `status` ∈ {`draft`, `published`, `retired`}, `published_at`, `published_by`, `comment`, `rules[]`.
 - <a id="dm-15-2"></a>**DM-15.2 Rule fields.** `rule_id` (stable slug), `kind` ([DM-15.3](#dm-15-3)), `pattern`, `target_kind`, `target` (a fixed ID or a capture-group mapping such as `matter_code=$1`), `confidence`, `priority`.
-- <a id="dm-15-3"></a>**DM-15.3 Rule kinds and typical confidence.** `matter_code_regex` over file name, subject and the first 2,000 characters of text (0.98); `path_glob` over a filesystem or exported path (0.95); `sharepoint_site` for a site or library (0.95); `pst_folder` for a PST folder path (0.90); `mailbox_owner` producing handler role `custodian` (0.99); `email_domain` matching sender or recipient domains to a client ([DM-07.3](#dm-07-3)) (0.75, client only).
+- <a id="dm-15-3"></a>**DM-15.3 Rule kinds and typical confidence.** `matter_code_regex` over file name, subject and the first 2,000 characters of text (0.98); `path_glob` over a filesystem or exported path (0.95); `sharepoint_site` for a site or library (0.95); `pst_folder` for a PST folder path (0.90); `mailbox_owner` producing handler role `custodian` (0.99); `email_domain` matching sender or recipient domains to a client ([DM-07.3](#dm-07-3)) (0.75, client only); `sharepoint_column` for an exact or regex match on a library column, such as a matter-number column (0.97); `email_address` mapping a sender or recipient address to a client or handler (0.85). Together these are the deterministic stage-1 rule set: PMS-derived codes, SharePoint sites and columns, path and file-name rules and e-mail header rules ([ING-09](ingestion.md#ing-09)).
 - <a id="dm-15-4"></a>**DM-15.4 Rule: evaluation.** Evaluation is a pure function of (document facts, reference data, rule set) that returns proposals with method `rule`. Every matching rule yields a proposal. Several proposals for the same target collapse to the highest confidence, and `priority` breaks ties between targets in a display. Facts come from all locations, including those of `duplicate` members ([DM-03.16](#dm-03-16)).
 - <a id="dm-15-5"></a>**DM-15.5 Invariant: publication.** A published version is immutable, and exactly one version is `published` at a time; publishing retires the previous one. Every regex compiles, and every fixed target exists.
 
@@ -343,15 +348,15 @@ Refs: [DM-09](#dm-09), [XC-01](overview.md#xc-01)
 <a id="dm-17"></a>
 ### DM-17 IngestionRun (aggregate)
 
-One durable execution over a source scope ([GL-18](../README.md#gl-18)). Its workflow is [WF-01](ingestion.md#wf-01) or [WF-03](ingestion.md#wf-03); how pause and recovery behave inside the workflow is [WF-05](ingestion.md#wf-05).
+One durable execution over a source scope or a selection ([GL-18](../README.md#gl-18)). Its workflow is [WF-01](ingestion.md#wf-01) (ingest), [WF-03](ingestion.md#wf-03) (reprocess) or [WF-06](ingestion.md#wf-06) (stage-2 enrich); how pause and recovery behave inside the workflow is [WF-05](ingestion.md#wf-05).
 
-- <a id="dm-17-1"></a>**DM-17.1 Fields.** `run_id`, `run_key` (idempotency key, [CMD-02](application.md#cmd-02)), `kind` ∈ {`ingest`, `reprocess`}, `source_id` (ingest runs), `scope` (path prefixes, site or library IDs, PST files, `modified_since`, document selection for reprocess), `mode` ∈ {`incremental`, `full`}, `stages[]` (reprocess runs: stage keys of [DM-02.5](#dm-02-5)), `pipeline_version`, `workflow_id`, `requested_by`, `state`, `state_reason`, `started_at`, `finished_at`.
-- <a id="dm-17-2"></a>**DM-17.2 Counters.** For each stage key: `pending`, `done`, `skipped`, `failed`, `quarantined`, `excluded`, plus `discovered_total`, `bytes_fetched` and `discovery_exhausted`. Counters only grow, apart from `pending`.
+- <a id="dm-17-1"></a>**DM-17.1 Fields.** `run_id`, `run_key` (idempotency key, [CMD-02](application.md#cmd-02)), `kind` ∈ {`ingest`, `reprocess`, `enrich`}, `source_id` (ingest runs), `scope` (path prefixes, site or library IDs, PST files, `modified_since`), `selection` (reprocess runs and selection-mode enrich runs, [CMD-25.1](application.md#cmd-25-1)), `mode` ∈ {`incremental`, `full`}, `stages[]` (reprocess and enrich runs: stage keys of [DM-02.5](#dm-02-5)), `enrich_mode` ∈ {`follow`, `none`} (ingest and reprocess runs: whether a companion enrich run follows them), `follows_run_id` (enrich runs in follow mode: the ingest or reprocess run whose handoffs they admit; selection-mode enrich runs created by a mixed request: the reprocess run they wait for, [CMD-25.3](application.md#cmd-25-3)), `max_in_flight` (enrich runs; set by the [CMD-03](application.md#cmd-03) `throttle` action), `pipeline_version`, `workflow_id`, `requested_by`, `state`, `state_reason`, `started_at`, `finished_at`.
+- <a id="dm-17-2"></a>**DM-17.2 Counters.** For each stage key: `pending`, `done`, `skipped`, `failed`, `quarantined`, `excluded`, plus `discovered_total`, `bytes_fetched` and `discovery_exhausted`. Counters only grow, apart from `pending`. Ingest and reprocess runs keep counters for stage-1 keys only. Enrich runs keep them per stage-2 key, and `pending` counts only handed-off items.
 - <a id="dm-17-3"></a>**DM-17.3 State machine.**
 
 ```mermaid
 stateDiagram-v2
-  [*] --> pending : CMD-02 / CMD-25
+  [*] --> pending : CMD-02 / CMD-25 (also the companion enrich run)
   pending --> running : CMD-27 (workflow started)
   running --> paused : CMD-03 pause
   paused --> running : CMD-03 resume
@@ -366,10 +371,10 @@ stateDiagram-v2
 ```
 
 - <a id="dm-17-4"></a>**DM-17.4 Invariant: terminal states.** `completed`, `cancelled` and `failed` are final. A failed or cancelled run is continued by starting a new run; already finished items are skipped through [DM-02.8](#dm-02-8).
-- <a id="dm-17-5"></a>**DM-17.5 Invariant: completion.** A run is `completed` only when discovery is exhausted and no item in scope has a stage that is `pending` or `failed`. Quarantined items do not block completion.
-- <a id="dm-17-6"></a>**DM-17.6 Invariant: one active ingest run per source.** At most one ingest run per source is `pending`, `running` or `paused`, which keeps cursor updates single-writer. Reprocess runs are not limited this way.
+- <a id="dm-17-5"></a>**DM-17.5 Invariant: completion.** A run is `completed` only when discovery is exhausted and no item in scope has a stage *of the run's stage group* (stage 1 for ingest and reprocess runs, stage 2 for enrich runs, [ING-21.1](ingestion.md#ing-21-1)) that is `pending` or `failed`; stage-2 stages set `pending` by the handoff of [ING-14.4](ingestion.md#ing-14-4) never block an ingest or reprocess run. Quarantined items do not block completion. An enrich run in follow mode is completed only when its followed run is terminal and no handed-off item of the run is `pending` or `failed`.
+- <a id="dm-17-6"></a>**DM-17.6 Invariant: one active ingest run per source.** At most one ingest run per source is `pending`, `running` or `paused`, which keeps cursor updates single-writer. Reprocess runs are not limited this way. At most one active follow-mode enrich run exists per followed run. A document's stage-2 stages carry one `run_id` at a time (claimed by [CMD-28](application.md#cmd-28)), so a document is enriched by at most one active enrich run.
 
-Refs: [DM-01](#dm-01), [DM-02](#dm-02), [WF-01](ingestion.md#wf-01), [WF-05](ingestion.md#wf-05), [CMD-25](application.md#cmd-25), [CMD-03](application.md#cmd-03), [CMD-27](application.md#cmd-27)
+Refs: [DM-01](#dm-01), [DM-02](#dm-02), [WF-01](ingestion.md#wf-01), [WF-05](ingestion.md#wf-05), [WF-06](ingestion.md#wf-06), [CMD-25](application.md#cmd-25), [CMD-03](application.md#cmd-03), [CMD-27](application.md#cmd-27)
 
 <a id="dm-18"></a>
 ### DM-18 DomainEvent (value object)

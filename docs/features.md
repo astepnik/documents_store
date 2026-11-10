@@ -14,7 +14,7 @@ This file owns the features (F-) of the PoC: what the system does, grouped by ar
 | [F-06](#f-06) Version-aware reprocessing | Long-running ingestion | must | [SC-04](success-criteria.md#sc-04), [SC-08](success-criteria.md#sc-08) |
 | [F-07](#f-07) Deduplication and e-mail threading | Organisation | must | [SC-13](success-criteria.md#sc-13) |
 | [F-08](#f-08) Rules-based assignment | Organisation | must | [SC-03](success-criteria.md#sc-03) |
-| [F-09](#f-09) Local-LLM enrichment | Organisation | must | [SC-04](success-criteria.md#sc-04) |
+| [F-09](#f-09) Local-LLM enrichment (stage 2) | Organisation | must | [SC-04](success-criteria.md#sc-04) |
 | [F-10](#f-10) Review queue and human override | Organisation | must | [SC-03](success-criteria.md#sc-03), [SC-04](success-criteria.md#sc-04) |
 | [F-11](#f-11) Taxonomy management | Organisation | must | [SC-04](success-criteria.md#sc-04) |
 | [F-12](#f-12) Reference data import | Organisation | must | [SC-03](success-criteria.md#sc-03) |
@@ -25,8 +25,10 @@ This file owns the features (F-) of the PoC: what the system does, grouped by ar
 | [F-17](#f-17) Audit trail | Governance | must | [SC-12](success-criteria.md#sc-12) |
 | [F-18](#f-18) MCP server for agents | Agent access | must | [SC-11](success-criteria.md#sc-11), [SC-12](success-criteria.md#sc-12) |
 | [F-19](#f-19) Local one-command deployment | Platform and evaluation | must | [SC-07](success-criteria.md#sc-07), [SC-14](success-criteria.md#sc-14) |
-| [F-20](#f-20) Evaluation harness | Platform and evaluation | must | [SC-03](success-criteria.md#sc-03), [SC-04](success-criteria.md#sc-04), [SC-05](success-criteria.md#sc-05), [SC-06](success-criteria.md#sc-06), [SC-07](success-criteria.md#sc-07), [SC-08](success-criteria.md#sc-08), [SC-12](success-criteria.md#sc-12), [SC-13](success-criteria.md#sc-13), [SC-15](success-criteria.md#sc-15) |
+| [F-20](#f-20) Evaluation harness | Platform and evaluation | must | [SC-03](success-criteria.md#sc-03), [SC-04](success-criteria.md#sc-04), [SC-05](success-criteria.md#sc-05), [SC-06](success-criteria.md#sc-06), [SC-07](success-criteria.md#sc-07), [SC-08](success-criteria.md#sc-08), [SC-12](success-criteria.md#sc-12), [SC-13](success-criteria.md#sc-13), [SC-15](success-criteria.md#sc-15), [SC-16](success-criteria.md#sc-16) |
 | [F-21](#f-21) Minimal web UI and CLI | Platform and evaluation | must | [SC-03](success-criteria.md#sc-03), [SC-10](success-criteria.md#sc-10) |
+| [F-22](#f-22) Two-stage ingestion | Long-running ingestion | must | [SC-16](success-criteria.md#sc-16), [SC-08](success-criteria.md#sc-08), [SC-09](success-criteria.md#sc-09), [SC-10](success-criteria.md#sc-10) |
+| [F-23](#f-23) Local model serving | Platform and evaluation | must | [SC-14](success-criteria.md#sc-14), [SC-16](success-criteria.md#sc-16), [SC-09](success-criteria.md#sc-09) |
 
 The map shows which features feed which: content flows from left to right, and governance applies to every read path. Nodes link to the feature.
 
@@ -39,6 +41,7 @@ flowchart LR
     F04[F-04 Durable runs]
     F05[F-05 Progress]
     F06[F-06 Reprocessing]
+    F22[F-22 2-stage ingestion]
   end
   subgraph ORG[Organisation]
     F07[F-07 Dedup and threads]
@@ -58,10 +61,14 @@ flowchart LR
   end
   F18[F-18 MCP]
   F21[F-21 UI and CLI]
+  F23[F-23 Local models]
   F04 -. orchestrates .-> SRC
   F04 -. orchestrates .-> ORG
   F05 -. observes .-> F04
   F06 -. re-runs .-> ORG
+  F22 -. sequences .-> ORG
+  F23 --> F09
+  F23 --> F13
   F03 --> F07 --> F08
   F10 --> READ
   F16 --> READ
@@ -87,6 +94,8 @@ flowchart LR
   click F17 "#f-17"
   click F18 "#f-18"
   click F21 "#f-21"
+  click F22 "#f-22"
+  click F23 "#f-23"
 ```
 
 ## Sources and extraction
@@ -101,7 +110,7 @@ An operator registers the places content lives ([GL-01](README.md#gl-01)) and th
 - <a id="f-01-1"></a>**F-01.1** `must` Register a local-drive source: a folder root on a mounted volume with include and exclude globs ([ADP-17](architecture/ports-adapters.md#adp-17)).
 - <a id="f-01-2"></a>**F-01.2** `must` Register a PST source: one or more PST files on a mounted volume; each message becomes a source item ([GL-02](README.md#gl-02)) with a stable key ([ADP-18](architecture/ports-adapters.md#adp-18)); attachments found inside messages and containers are added as further source items by [ING-04](architecture/ingestion.md#ing-04).
 - <a id="f-01-3"></a>**F-01.3** `must` Register a SharePoint source from a folder export that keeps site, library, path and column metadata ([ADP-19](architecture/ports-adapters.md#adp-19) fallback mode).
-- <a id="f-01-4"></a>**F-01.4** `should` Register a live SharePoint source over Microsoft Graph delta queries ([ADP-19](architecture/ports-adapters.md#adp-19)); needs tenant consent, so the export path in [F-01.3](#f-01-3) is the PoC baseline.
+- <a id="f-01-4"></a>**F-01.4** `later` Register a live SharePoint source over Microsoft Graph delta queries ([ADP-19](architecture/ports-adapters.md#adp-19)). It needs runtime egress to Microsoft hosts, which the zero-egress posture excludes ([SCOPE-04.7](README.md#scope-04-7)); the folder export of [F-01.3](#f-01-3) is the PoC path.
 - <a id="f-01-5"></a>**F-01.5** `must` Connectivity and readability are checked at registration; a failing source is rejected with the reason ([CMD-01](architecture/application.md#cmd-01)).
 - <a id="f-01-6"></a>**F-01.6** `must` Incremental discovery: each run continues from the source's saved cursor, picks up additions, edits and deletions, and skips items whose fingerprint is unchanged ([ING-01](architecture/ingestion.md#ing-01), measured by [SC-01.6](success-criteria.md#sc-01-6)).
 - <a id="f-01-7"></a>**F-01.7** `must` Discovery of a large source is paged and checkpointed, so a crash mid-discovery resumes at the last page, not at the start ([CMD-04](architecture/application.md#cmd-04), [WF-01](architecture/ingestion.md#wf-01)).
@@ -153,20 +162,21 @@ Refs: [PORT-15](architecture/ports-adapters.md#port-15), [ADR-07](architecture/d
 
 **Priority:** must. **Serves:** [SC-07](success-criteria.md#sc-07), [SC-08](success-criteria.md#sc-08), [SC-09](success-criteria.md#sc-09).
 
-An operator starts an ingestion run ([GL-18](README.md#gl-18)) over a source scope that may take days, and the run survives crashes, restarts and API limits without duplicate work.
+An operator starts an ingestion run ([GL-18](README.md#gl-18)) over a source scope that may take days, and the run survives crashes, restarts and model-endpoint back-pressure without duplicate work.
 
 - <a id="f-04-1"></a>**F-04.1** `must` Start a run over a whole source or a sub-scope (folder, PST file, SharePoint library) from the CLI, API or UI; starting the same run key twice starts it once ([CMD-02](architecture/application.md#cmd-02), [WF-01](architecture/ingestion.md#wf-01)).
 - <a id="f-04-2"></a>**F-04.2** `must` Every pipeline step is checkpointed; after a worker or database crash the run resumes automatically with no duplicate documents or chunks ([WF-02](architecture/ingestion.md#wf-02), [ING-18](architecture/ingestion.md#ing-18), [WF-05](architecture/ingestion.md#wf-05); gates [SC-08.1](success-criteria.md#sc-08-1), [SC-08.2](success-criteria.md#sc-08-2), [SC-08.3](success-criteria.md#sc-08-3)).
 - <a id="f-04-3"></a>**F-04.3** `must` Re-running a completed run is a no-op (gates [SC-08.5](success-criteria.md#sc-08-5)).
 - <a id="f-04-4"></a>**F-04.4** `must` Pause, resume and cancel a run; in-flight steps finish or are abandoned per [WF-05](architecture/ingestion.md#wf-05) ([CMD-03](architecture/application.md#cmd-03); measured by [SC-08.6](success-criteria.md#sc-08-6)).
 - <a id="f-04-5"></a>**F-04.5** `must` Failed steps retry with backoff by error class, and poison items are quarantined without blocking the run ([ING-15](architecture/ingestion.md#ing-15), [XC-05](architecture/overview.md#xc-05), [CMD-16](architecture/application.md#cmd-16)).
-- <a id="f-04-6"></a>**F-04.6** `must` Calls to the embedding API stay within the provider's rate limit and back off on 429 responses ([WF-04](architecture/ingestion.md#wf-04), [ING-13](architecture/ingestion.md#ing-13); gates [SC-09.1](success-criteria.md#sc-09-1)).
-- <a id="f-04-7"></a>**F-04.7** `must` Concurrency of local-LLM and OCR work never exceeds its configured cap ([WF-04](architecture/ingestion.md#wf-04); gates [SC-09.3](success-criteria.md#sc-09-3)).
+- <a id="f-04-6"></a>**F-04.6** **Retired:** there is no external embedding API or rate limit. Replaced by [F-04.11](#f-04-11).
+- <a id="f-04-7"></a>**F-04.7** `must` Concurrency of local-LLM, local-embedding and OCR work never exceeds its configured cap ([WF-04](architecture/ingestion.md#wf-04); gates [SC-09.3](success-criteria.md#sc-09-3)).
 - <a id="f-04-8"></a>**F-04.8** `must` Throughput scales by adding worker replicas, with no coordination beyond the database ([DEP-05](architecture/overview.md#dep-05)).
 - <a id="f-04-9"></a>**F-04.9** `should` Re-queue the quarantined items of a run after the cause is fixed, without re-running the rest ([CMD-25](architecture/application.md#cmd-25)).
 - <a id="f-04-10"></a>**F-04.10** `later` Scheduled incremental runs (for example nightly) per source.
+- <a id="f-04-11"></a>**F-04.11** `must` Model-endpoint back-pressure: when a local model endpoint is saturated, warming up or restarting, steps wait as `backpressure` without quarantine or attempt-budget use ([ING-15.3](architecture/ingestion.md#ing-15-3), [ING-15.4](architecture/ingestion.md#ing-15-4); gates [SC-09.1](success-criteria.md#sc-09-1)).
 
-Realised by: [CMD-02](architecture/application.md#cmd-02), [CMD-03](architecture/application.md#cmd-03), [CMD-16](architecture/application.md#cmd-16), [CMD-25](architecture/application.md#cmd-25), [CMD-27](architecture/application.md#cmd-27), [WF-01](architecture/ingestion.md#wf-01), [WF-02](architecture/ingestion.md#wf-02), [WF-04](architecture/ingestion.md#wf-04), [WF-05](architecture/ingestion.md#wf-05), [ING-15](architecture/ingestion.md#ing-15), [ING-18](architecture/ingestion.md#ing-18).
+Realised by: [CMD-02](architecture/application.md#cmd-02), [CMD-03](architecture/application.md#cmd-03), [CMD-16](architecture/application.md#cmd-16), [CMD-25](architecture/application.md#cmd-25), [CMD-27](architecture/application.md#cmd-27), [WF-01](architecture/ingestion.md#wf-01), [WF-02](architecture/ingestion.md#wf-02), [WF-04](architecture/ingestion.md#wf-04), [WF-05](architecture/ingestion.md#wf-05), [WF-06](architecture/ingestion.md#wf-06), [WF-07](architecture/ingestion.md#wf-07), [ING-15](architecture/ingestion.md#ing-15), [ING-18](architecture/ingestion.md#ing-18).
 Refs: [ADR-04](architecture/decisions.md#adr-04), [DM-17](architecture/domain.md#dm-17).
 
 <a id="f-05"></a>
@@ -177,11 +187,11 @@ Refs: [ADR-04](architecture/decisions.md#adr-04), [DM-17](architecture/domain.md
 Operators see how far a run is, how fast it goes, when it will finish and what failed.
 
 - <a id="f-05-1"></a>**F-05.1** `must` Run state and the per-stage counters of [ING-16](architecture/ingestion.md#ing-16) ([QRY-10](architecture/application.md#qry-10)).
-- <a id="f-05-2"></a>**F-05.2** `must` Throughput per stage and an ETA for the run ([QRY-10](architecture/application.md#qry-10); measured by [SC-10.3](success-criteria.md#sc-10-3)).
+- <a id="f-05-2"></a>**F-05.2** `must` Throughput per stage group and an ETA, with stage-2 backlog and lag ([QRY-10](architecture/application.md#qry-10), [ING-16.7](architecture/ingestion.md#ing-16-7); measured by [SC-10.3](success-criteria.md#sc-10-3)).
 - <a id="f-05-3"></a>**F-05.3** `must` Failure list per run with error class, attempts and last error, filterable by stage and class ([QRY-11](architecture/application.md#qry-11); measured by [SC-10.4](success-criteria.md#sc-10-4)).
 - <a id="f-05-4"></a>**F-05.4** `must` The same numbers on the UI run page, the CLI status command and the HTTP API, at most 10 s stale ([F-21](#f-21); measured by [SC-10.1](success-criteria.md#sc-10-1), [SC-10.2](success-criteria.md#sc-10-2)).
 - <a id="f-05-5"></a>**F-05.5** `must` Logs correlated by run, workflow and document ID, so one document's history can be followed across services ([XC-03](architecture/overview.md#xc-03); measured by [SC-10.5](success-criteria.md#sc-10-5)).
-- <a id="f-05-6"></a>**F-05.6** `later` OpenTelemetry traces and metrics exported to an external backend ([XC-03](architecture/overview.md#xc-03)).
+- <a id="f-05-6"></a>**F-05.6** `later` OpenTelemetry traces and metrics exported to an on-premises backend (no egress, [XC-03.5](architecture/overview.md#xc-03-5)).
 
 Realised by: [QRY-10](architecture/application.md#qry-10), [QRY-11](architecture/application.md#qry-11), [ING-16](architecture/ingestion.md#ing-16).
 Refs: [XC-03](architecture/overview.md#xc-03), [DM-17](architecture/domain.md#dm-17).
@@ -194,15 +204,35 @@ Refs: [XC-03](architecture/overview.md#xc-03), [DM-17](architecture/domain.md#dm
 When a parser, OCR setting, rule set, prompt, LLM or embedding model changes, only the affected stages of the affected documents are redone, and human decisions stay.
 
 - <a id="f-06-1"></a>**F-06.1** `must` Derived data carries the version stamps of [XC-06](architecture/overview.md#xc-06), so stale documents can be selected per stage.
-- <a id="f-06-2"></a>**F-06.2** `must` Request reprocessing by scope (source, matter, run, document list) and/or by stale version, choosing the stages to redo: extract, OCR, enrich, assign, chunk and embed ([CMD-25](architecture/application.md#cmd-25), [WF-03](architecture/ingestion.md#wf-03)).
-- <a id="f-06-3"></a>**F-06.3** `must` Downstream stages follow automatically (new text leads to re-chunking and re-embedding), and stages whose inputs did not change are skipped, so no embedding API cost is spent on unchanged chunks ([ING-17](architecture/ingestion.md#ing-17)).
+- <a id="f-06-2"></a>**F-06.2** `must` Request reprocessing by scope (source, matter, run, document list) and/or by stale version, choosing the stages to redo: extract, OCR, enrich, assign, chunk and embed ([CMD-25](architecture/application.md#cmd-25), [WF-03](architecture/ingestion.md#wf-03)); stage-2 stages are re-run as their own enrich run ([F-22.5](#f-22-5)).
+- <a id="f-06-3"></a>**F-06.3** `must` Downstream stages follow automatically (new text leads to re-chunking and re-embedding), and stages whose inputs did not change are skipped, so no GPU time is spent on unchanged chunks or unchanged enrichment inputs ([ING-17](architecture/ingestion.md#ing-17)).
 - <a id="f-06-4"></a>**F-06.4** `must` Human overrides of assignments and enrichment fields survive reprocessing ([F-10](#f-10); gates [SC-04.7](success-criteria.md#sc-04-7)).
 - <a id="f-06-5"></a>**F-06.5** `must` A reprocessing request is itself a durable run with progress, pause and cancel ([F-04](#f-04), [F-05](#f-05); measured by [SC-08.8](success-criteria.md#sc-08-8)).
-- <a id="f-06-6"></a>**F-06.6** `should` Dry run that reports the number of affected documents and estimated embedding tokens before starting.
+- <a id="f-06-6"></a>**F-06.6** `should` Dry run that reports, before starting, the number of affected documents and the estimated LLM calls, embedding tokens and GPU-hours per stage ([CMD-25.2](architecture/application.md#cmd-25-2)).
 - <a id="f-06-7"></a>**F-06.7** `later` Embedding-model migration with both vector versions kept until cut-over ([ADR-12](architecture/decisions.md#adr-12)).
 
 Realised by: [CMD-25](architecture/application.md#cmd-25), [CMD-28](architecture/application.md#cmd-28), [WF-03](architecture/ingestion.md#wf-03), [ING-17](architecture/ingestion.md#ing-17).
 Refs: [XC-06](architecture/overview.md#xc-06).
+
+<a id="f-22"></a>
+### F-22 Two-stage ingestion
+
+**Priority:** must. **Serves:** [SC-16](success-criteria.md#sc-16), [SC-08](success-criteria.md#sc-08), [SC-09](success-criteria.md#sc-09), [SC-10](success-criteria.md#sc-10).
+
+Documents become searchable through a deterministic stage 1 ([GL-21](README.md#gl-21)); LLM enrichment follows as an independently controlled stage 2 ([GL-22](README.md#gl-22), [ADR-17](architecture/decisions.md#adr-17)).
+
+- <a id="f-22-1"></a>**F-22.1** `must` Stage 1 makes a document searchable (keyword, vector, rule-derived metadata, ACL) without any LLM call ([WF-02](architecture/ingestion.md#wf-02), [ING-21](architecture/ingestion.md#ing-21); gates [SC-16.1](success-criteria.md#sc-16-1)).
+- <a id="f-22-2"></a>**F-22.2** `must` Stage-1 completion durably hands the document to stage 2 ([ING-14.4](architecture/ingestion.md#ing-14-4)).
+- <a id="f-22-3"></a>**F-22.3** `must` A run can be stage-1-only (`enrich_mode=none`), and stage 2 can be started later over waiting documents ([CMD-02](architecture/application.md#cmd-02), [CMD-25](architecture/application.md#cmd-25)).
+- <a id="f-22-4"></a>**F-22.4** `must` Stage 2 is paused, resumed, throttled and cancelled independently of stage 1, and its in-flight work is bounded by the admission window ([CMD-03](architecture/application.md#cmd-03), [WF-05.10](architecture/ingestion.md#wf-05-10), [WF-06.3](architecture/ingestion.md#wf-06-3); measured by [SC-16.3](success-criteria.md#sc-16-3) and [SC-09.4](success-criteria.md#sc-09-4)).
+- <a id="f-22-5"></a>**F-22.5** `must` Stage 2 re-runs on its own for a new prompt or LLM version, without re-chunking, re-embedding or touching stage 1 ([ING-17](architecture/ingestion.md#ing-17), [WF-06](architecture/ingestion.md#wf-06); gates [SC-16.2](success-criteria.md#sc-16-2)).
+- <a id="f-22-6"></a>**F-22.6** `must` Progress shows stage-2 backlog and lag separately ([QRY-10](architecture/application.md#qry-10), [ING-16.7](architecture/ingestion.md#ing-16-7)).
+- <a id="f-22-7"></a>**F-22.7** `must` GPU sharing gives query and stage-1 embedding priority over stage-2 LLM work ([WF-04.9](architecture/ingestion.md#wf-04-9); measured by [SC-16.6](success-criteria.md#sc-16-6)).
+- <a id="f-22-8"></a>**F-22.8** `later` Prioritised stage 2 (by matter, recency or document type).
+- <a id="f-22-9"></a>**F-22.9** `must` Per-stage throughput (stage-1 chunks/s, stage-2 documents/s) is measured on the reference host and projected to 100 GB per stage ([ING-16.4](architecture/ingestion.md#ing-16-4), [DEP-08.6](architecture/overview.md#dep-08-6); gates [SC-09.5](success-criteria.md#sc-09-5), [SC-09.6](success-criteria.md#sc-09-6)).
+
+Realised by: [CMD-02](architecture/application.md#cmd-02), [CMD-03](architecture/application.md#cmd-03), [CMD-15](architecture/application.md#cmd-15), [CMD-25](architecture/application.md#cmd-25), [CMD-28](architecture/application.md#cmd-28), [WF-02](architecture/ingestion.md#wf-02), [WF-06](architecture/ingestion.md#wf-06), [WF-07](architecture/ingestion.md#wf-07), [ING-14](architecture/ingestion.md#ing-14), [ING-19](architecture/ingestion.md#ing-19), [ING-20](architecture/ingestion.md#ing-20), [ING-21](architecture/ingestion.md#ing-21).
+Refs: [ADR-17](architecture/decisions.md#adr-17), [DM-17](architecture/domain.md#dm-17).
 
 ## Organisation
 
@@ -235,20 +265,20 @@ Documents are assigned to clients, matters, handlers and case types ([GL-12](REA
 - <a id="f-08-2"></a>**F-08.2** `must` Each document receives client, matter, handler and case type assignments from the published rule set ([CMD-10](architecture/application.md#cmd-10), [ING-09](architecture/ingestion.md#ing-09)).
 - <a id="f-08-3"></a>**F-08.3** `must` Attachments inherit their family parent's assignment and replies inherit their thread's, unless a stronger signal disagrees ([CMD-10](architecture/application.md#cmd-10); measured by [SC-03.6](success-criteria.md#sc-03-6)).
 - <a id="f-08-4"></a>**F-08.4** `must` Every assignment records which rule and rule-set version produced it ([GL-16](README.md#gl-16)).
-- <a id="f-08-5"></a>**F-08.5** `must` Rule and LLM signals are reconciled under the confidence bands of [TAX-04](architecture/domain.md#tax-04): confident assignments are accepted, others go to review ([CMD-12](architecture/application.md#cmd-12), [ING-11](architecture/ingestion.md#ing-11); gates [SC-03.4](success-criteria.md#sc-03-4)).
+- <a id="f-08-5"></a>**F-08.5** `must` Rule and LLM signals are reconciled under the confidence bands of [TAX-04](architecture/domain.md#tax-04): confident assignments are accepted, others go to review. Reconciliation runs in both stages ([DM-10.6](architecture/domain.md#dm-10-6), [CMD-12](architecture/application.md#cmd-12), [ING-11](architecture/ingestion.md#ing-11), [ING-19](architecture/ingestion.md#ing-19); gates [SC-03.4](success-criteria.md#sc-03-4)).
 - <a id="f-08-6"></a>**F-08.6** `should` Dry run of a draft rule set against indexed documents, reporting how many assignments would change.
 - <a id="f-08-7"></a>**F-08.7** `should` Publishing a rule-set version triggers re-assignment of affected documents through [F-06](#f-06).
 - <a id="f-08-8"></a>**F-08.8** `later` Rules learned from review decisions (suggested rules from frequent corrections).
 
-Realised by: [CMD-10](architecture/application.md#cmd-10), [CMD-12](architecture/application.md#cmd-12), [CMD-24](architecture/application.md#cmd-24), [ING-09](architecture/ingestion.md#ing-09), [ING-11](architecture/ingestion.md#ing-11).
+Realised by: [CMD-10](architecture/application.md#cmd-10), [CMD-12](architecture/application.md#cmd-12), [CMD-24](architecture/application.md#cmd-24), [ING-09](architecture/ingestion.md#ing-09), [ING-11](architecture/ingestion.md#ing-11), [ING-19](architecture/ingestion.md#ing-19).
 Refs: [ADR-08](architecture/decisions.md#adr-08), [DM-10](architecture/domain.md#dm-10).
 
 <a id="f-09"></a>
-### F-09 Local-LLM enrichment
+### F-09 Local-LLM enrichment (stage 2)
 
 **Priority:** must. **Serves:** [SC-04](success-criteria.md#sc-04).
 
-At ingest, the local LLM reads each unique document and proposes structured attributes ([GL-15](README.md#gl-15)), each with provenance; no document text reaches an external LLM.
+In stage 2 ([GL-22](README.md#gl-22)), after the document is already searchable, the local LLM reads each unique document and proposes structured attributes ([GL-15](README.md#gl-15)), each with provenance; no text leaves the host ([SCOPE-04.5](README.md#scope-04-5)).
 
 - <a id="f-09-1"></a>**F-09.1** `must` Document type from [TAX-02](architecture/domain.md#tax-02) (measured by [SC-04.1](success-criteria.md#sc-04-1)).
 - <a id="f-09-2"></a>**F-09.2** `must` Tags from [TAX-03](architecture/domain.md#tax-03); new tags are proposed as candidates and are not filterable until promoted in [F-11](#f-11) (measured by [SC-04.2](success-criteria.md#sc-04-2)).
@@ -257,12 +287,14 @@ At ingest, the local LLM reads each unique document and proposes structured attr
 - <a id="f-09-5"></a>**F-09.5** `must` A short summary for result lists and agent orientation (measured by [SC-04.5](success-criteria.md#sc-04-5)).
 - <a id="f-09-6"></a>**F-09.6** `must` Each field carries model, prompt version and confidence ([LLM-04](architecture/ingestion.md#llm-04); gates [SC-04.6](success-criteria.md#sc-04-6)), and only vocabulary values are stored (gates [SC-04.3](success-criteria.md#sc-04-3)).
 - <a id="f-09-7"></a>**F-09.7** `must` Invalid or low-confidence output is repaired once or routed to review, never stored silently ([LLM-05](architecture/ingestion.md#llm-05); measured by [SC-04.8](success-criteria.md#sc-04-8)).
-- <a id="f-09-8"></a>**F-09.8** `must` The LLM runs locally; document text is treated as untrusted input ([LLM-06](architecture/ingestion.md#llm-06), [XC-02](architecture/overview.md#xc-02), [ADR-05](architecture/decisions.md#adr-05)).
+- <a id="f-09-8"></a>**F-09.8** `must` The LLM runs locally behind an OpenAI-compatible endpoint; document text is treated as untrusted input ([LLM-06](architecture/ingestion.md#llm-06), [XC-02](architecture/overview.md#xc-02), [ADR-15](architecture/decisions.md#adr-15)).
 - <a id="f-09-9"></a>**F-09.9** `should` Extracted parties and people are matched to known clients and persons from [F-12](#f-12), and matches are shown as links in [F-14](#f-14).
 - <a id="f-09-10"></a>**F-09.10** `later` Multi-pass enrichment of very long documents beyond the bounded excerpt of [LLM-02](architecture/ingestion.md#llm-02).
+- <a id="f-09-11"></a>**F-09.11** `later` Summary embedding: summaries indexed as an extra vector or keyword field, as a stage-2 step with its own stamp ([ADR-17.4](architecture/decisions.md#adr-17-4)).
+- <a id="f-09-12"></a>**F-09.12** `must` Metadata-only index update: enrichment values reach search filters through a metadata-only update of the document's chunks, without re-chunking or re-embedding ([ING-20](architecture/ingestion.md#ing-20)).
 
-Realised by: [CMD-11](architecture/application.md#cmd-11), [ING-10](architecture/ingestion.md#ing-10), [LLM-01](architecture/ingestion.md#llm-01), [LLM-02](architecture/ingestion.md#llm-02), [LLM-03](architecture/ingestion.md#llm-03), [LLM-04](architecture/ingestion.md#llm-04), [LLM-05](architecture/ingestion.md#llm-05).
-Refs: [ADR-05](architecture/decisions.md#adr-05), [DM-12](architecture/domain.md#dm-12).
+Realised by: [CMD-11](architecture/application.md#cmd-11), [ING-10](architecture/ingestion.md#ing-10), [LLM-01](architecture/ingestion.md#llm-01), [LLM-02](architecture/ingestion.md#llm-02), [LLM-03](architecture/ingestion.md#llm-03), [LLM-04](architecture/ingestion.md#llm-04), [LLM-05](architecture/ingestion.md#llm-05), [WF-06](architecture/ingestion.md#wf-06), [WF-07](architecture/ingestion.md#wf-07), [ING-19](architecture/ingestion.md#ing-19), [ING-20](architecture/ingestion.md#ing-20).
+Refs: [ADR-15](architecture/decisions.md#adr-15), [ADR-17](architecture/decisions.md#adr-17), [DM-12](architecture/domain.md#dm-12).
 
 <a id="f-10"></a>
 ### F-10 Review queue and human override
@@ -444,22 +476,22 @@ Refs: [ADR-10](architecture/decisions.md#adr-10).
 The whole PoC runs on one machine ([SCOPE-01](README.md#scope-01)) and a seeded demo comes up with two commands.
 
 - <a id="f-19-1"></a>**F-19.1** `must` `docker compose up` starts every service of [DEP-01](architecture/overview.md#dep-01).
-- <a id="f-19-2"></a>**F-19.2** `must` One CLI command applies migrations, loads reference data, taxonomy, rules and policies, registers the sample sources and starts a run (measured by [SC-14.7](success-criteria.md#sc-14-7)).
-- <a id="f-19-3"></a>**F-19.3** `must` Configuration per profile (local, test) from environment files, including the embedding API key ([XC-04](architecture/overview.md#xc-04)).
-- <a id="f-19-4"></a>**F-19.4** `must` The only outbound traffic goes to the embedding API host ([DEP-01](architecture/overview.md#dep-01), [XC-02](architecture/overview.md#xc-02); gates [SC-14.6](success-criteria.md#sc-14-6)).
-- <a id="f-19-5"></a>**F-19.5** `must` Host requirements and the 100 GB sizing projection are documented ([DEP-08](architecture/overview.md#dep-08); gates [SC-07.4](success-criteria.md#sc-07-4)).
-- <a id="f-19-6"></a>**F-19.6** `should` CPU-only fallback when no GPU is present, using the smaller model of [DEP-07](architecture/overview.md#dep-07).
+- <a id="f-19-2"></a>**F-19.2** `must` One CLI command applies migrations, loads reference data, taxonomy, rules and policies, registers the sample sources and starts a run, after the one-off model provisioning of [F-23.3](#f-23-3) (measured by [SC-14.7](success-criteria.md#sc-14-7)).
+- <a id="f-19-3"></a>**F-19.3** `must` Configuration per profile (local, test) from environment files, including model endpoint base URLs, model names with weights digests and runtime parameters; there are no API keys ([XC-04](architecture/overview.md#xc-04)).
+- <a id="f-19-4"></a>**F-19.4** `must` No outbound traffic at runtime: no container can reach any external host ([DEP-01.9](architecture/overview.md#dep-01-9), [XC-02](architecture/overview.md#xc-02); gates [SC-14.6](success-criteria.md#sc-14-6)).
+- <a id="f-19-5"></a>**F-19.5** `must` Host requirements, the 100 GB sizing projection and the accelerator-memory fit of the models are documented ([DEP-08](architecture/overview.md#dep-08), [DEP-08.8](architecture/overview.md#dep-08-8); gates [SC-07.4](success-criteria.md#sc-07-4), [SC-16.4](success-criteria.md#sc-16-4)).
+- <a id="f-19-6"></a>**F-19.6** `should` CPU-only fallback when no GPU is present: the `cpu` profile serves the fallback LLM and BGE-M3 with llama.cpp ([DEP-07.2](architecture/overview.md#dep-07-2), [DEP-09.4](architecture/overview.md#dep-09-4)).
 - <a id="f-19-7"></a>**F-19.7** `later` MinIO blob storage and multi-host deployment ([ADR-11](architecture/decisions.md#adr-11)).
 - <a id="f-19-8"></a>**F-19.8** `must` Architecture conformance tests: import contracts, fakes and adapter contract tests ([XC-07](architecture/overview.md#xc-07), [ARCH-03.5](architecture/overview.md#arch-03-5); gates [SC-14.1](success-criteria.md#sc-14-1) to [SC-14.5](success-criteria.md#sc-14-5)).
-- <a id="f-19-9"></a>**F-19.9** `should` vLLM profile for the local LLM ([DEP-07.4](architecture/overview.md#dep-07-4), [ADR-05](architecture/decisions.md#adr-05)).
+- <a id="f-19-9"></a>**F-19.9** **Retired:** vLLM is now the default runtime rather than a profile. Replaced by [F-23.2](#f-23-2).
 
 Realised by: [DEP-01](architecture/overview.md#dep-01), [XC-04](architecture/overview.md#xc-04).
-Refs: [DEP-08](architecture/overview.md#dep-08), [SCOPE-04](README.md#scope-04).
+Refs: [DEP-08](architecture/overview.md#dep-08), [SCOPE-04](README.md#scope-04), [ADR-15](architecture/decisions.md#adr-15).
 
 <a id="f-20"></a>
 ### F-20 Evaluation harness
 
-**Priority:** must. **Serves:** [SC-03](success-criteria.md#sc-03), [SC-04](success-criteria.md#sc-04), [SC-05](success-criteria.md#sc-05), [SC-06](success-criteria.md#sc-06), [SC-07](success-criteria.md#sc-07), [SC-08](success-criteria.md#sc-08), [SC-12](success-criteria.md#sc-12), [SC-13](success-criteria.md#sc-13), [SC-15](success-criteria.md#sc-15).
+**Priority:** must. **Serves:** [SC-03](success-criteria.md#sc-03), [SC-04](success-criteria.md#sc-04), [SC-05](success-criteria.md#sc-05), [SC-06](success-criteria.md#sc-06), [SC-07](success-criteria.md#sc-07), [SC-08](success-criteria.md#sc-08), [SC-12](success-criteria.md#sc-12), [SC-13](success-criteria.md#sc-13), [SC-15](success-criteria.md#sc-15), [SC-16](success-criteria.md#sc-16).
 
 Repeatable scripts turn the success criteria into numbers on frozen datasets ([SC-15](success-criteria.md#sc-15)).
 
@@ -472,6 +504,7 @@ Repeatable scripts turn the success criteria into numbers on frozen datasets ([S
 - <a id="f-20-7"></a>**F-20.7** `must` Wall leak suite run in CI ([SC-12](success-criteria.md#sc-12), [XC-07](architecture/overview.md#xc-07)).
 - <a id="f-20-8"></a>**F-20.8** `must` Dedup and threading scoring ([SC-13](success-criteria.md#sc-13)).
 - <a id="f-20-9"></a>**F-20.9** `must` A results report covering every check, as required by [SC-15.6](success-criteria.md#sc-15-6).
+- <a id="f-20-10"></a>**F-20.10** `must` Two-stage and local-inference scoring: stage-1-only versus post-stage-2 assignment and relevance deltas, stage-2 independence checks, and GPU memory and throughput sampling ([SC-16](success-criteria.md#sc-16), [SC-03.8](success-criteria.md#sc-03-8)).
 
 Realised by: [MOD-09](architecture/overview.md#mod-09), [QRY-01](architecture/application.md#qry-01).
 Refs: [SC-15](success-criteria.md#sc-15), [XC-07](architecture/overview.md#xc-07).
@@ -486,9 +519,27 @@ Thin human surfaces over the same commands and queries ([ADR-14](architecture/de
 - <a id="f-21-1"></a>**F-21.1** `must` Search page with query, filters and facets ([F-13](#f-13), [F-15](#f-15)).
 - <a id="f-21-2"></a>**F-21.2** `must` Document and thread page with override and flag actions ([F-14](#f-14), [F-10](#f-10)).
 - <a id="f-21-3"></a>**F-21.3** `must` Review queue page ([F-10](#f-10)).
-- <a id="f-21-4"></a>**F-21.4** `must` Run progress page that refreshes itself ([F-05](#f-05)).
-- <a id="f-21-5"></a>**F-21.5** `must` CLI for sources, runs (start, pause, resume, cancel, status), imports, taxonomy, rules, reprocessing and evaluation ([ADP-03](architecture/ports-adapters.md#adp-03)).
+- <a id="f-21-4"></a>**F-21.4** `must` Run progress page that refreshes itself, showing the ingest run and its companion enrich run with backlog and lag ([F-05](#f-05), [F-22.6](#f-22-6)).
+- <a id="f-21-5"></a>**F-21.5** `must` CLI for sources, runs (start, pause, resume, cancel, status), `enrich` (pause, resume, throttle, re-run), `models` (verify, status), imports, taxonomy, rules, reprocessing and evaluation ([ADP-03](architecture/ports-adapters.md#adp-03)).
 - <a id="f-21-6"></a>**F-21.6** `later` Matter-centric dashboards and a richer client-side UI.
 
 Realised by: [ADP-02](architecture/ports-adapters.md#adp-02), [ADP-03](architecture/ports-adapters.md#adp-03).
 Refs: [ADR-14](architecture/decisions.md#adr-14).
+
+<a id="f-23"></a>
+### F-23 Local model serving
+
+**Priority:** must. **Serves:** [SC-14](success-criteria.md#sc-14), [SC-16](success-criteria.md#sc-16), [SC-09](success-criteria.md#sc-09).
+
+Both models run locally behind OpenAI-compatible endpoints, configured only by base URL, model and parameters ([GL-23](README.md#gl-23), [ADR-15](architecture/decisions.md#adr-15), [ADR-16](architecture/decisions.md#adr-16)).
+
+- <a id="f-23-1"></a>**F-23.1** `must` Separate LLM and embedding roles with their own endpoints and config groups ([PORT-12](architecture/ports-adapters.md#port-12), [PORT-13](architecture/ports-adapters.md#port-13), [XC-04](architecture/overview.md#xc-04)).
+- <a id="f-23-2"></a>**F-23.2** `must` vLLM is the default runtime; llama.cpp server or Ollama are selectable by configuration ([DEP-07.6](architecture/overview.md#dep-07-6); measured by [SC-14.5](success-criteria.md#sc-14-5)).
+- <a id="f-23-3"></a>**F-23.3** `must` One-off provisioning downloads the pinned weights and verifies them against `models.lock` before any data load ([DEP-10](architecture/overview.md#dep-10)).
+- <a id="f-23-4"></a>**F-23.4** `must` Weights digests are verified at start and stamped on chunks and enrichment ([XC-06](architecture/overview.md#xc-06), [LLM-01.3](architecture/ingestion.md#llm-01-3); measured by [SC-16.5](success-criteria.md#sc-16-5)).
+- <a id="f-23-5"></a>**F-23.5** `must` Health and warm-up gate the model lanes ([ADP-12.7](architecture/ports-adapters.md#adp-12-7), [ADP-13.4](architecture/ports-adapters.md#adp-13-4)).
+- <a id="f-23-6"></a>**F-23.6** `must` The default models and KV cache fit within 96 GB ([DEP-08.8](architecture/overview.md#dep-08-8); gates [SC-16.4](success-criteria.md#sc-16-4)).
+- <a id="f-23-7"></a>**F-23.7** `should` Endpoint metrics (in-flight, waiting, KV usage, GPU memory) on the run page ([XC-03.7](architecture/overview.md#xc-03-7)).
+
+Realised by: [QRY-17](architecture/application.md#qry-17), [QRY-10](architecture/application.md#qry-10), [DEP-07](architecture/overview.md#dep-07), [DEP-09](architecture/overview.md#dep-09), [DEP-10](architecture/overview.md#dep-10), [ADP-12](architecture/ports-adapters.md#adp-12), [ADP-13](architecture/ports-adapters.md#adp-13).
+Refs: [ADR-15](architecture/decisions.md#adr-15), [ADR-16](architecture/decisions.md#adr-16).

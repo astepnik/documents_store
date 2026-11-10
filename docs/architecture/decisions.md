@@ -7,7 +7,7 @@ Short-form ADRs for the PoC. Each ADR has a status line and five sub-items: **.1
 
 Status: Accepted, 2026-11-10.
 
-- <a id="adr-01-1"></a>**ADR-01.1 Context.** The PoC combines many volatile integrations: three source connectors, five extractors, a local LLM, an external embedding API, a workflow engine and three inbound channels (HTTP/UI, CLI, MCP). Several of them are expected to be swapped after the PoC: the embedding provider, blob storage, authentication and possibly the search engine. Reads (search, facets, overviews) and writes (ingest, assign, override) have very different shapes.
+- <a id="adr-01-1"></a>**ADR-01.1 Context.** The PoC combines many volatile integrations: three source connectors, five extractors, a local LLM and a local embedding model behind OpenAI-compatible endpoints, a workflow engine and three inbound channels (HTTP/UI, CLI, MCP). Several of them are expected to be swapped after the PoC: the model runtime and the models, blob storage, authentication and possibly the search engine. Reads (search, facets, overviews) and writes (ingest, assign, override) have very different shapes.
 - <a id="adr-01-2"></a>**ADR-01.2 Decision.** Use ports and adapters, with a domain core that does no I/O. In the application layer, command handlers and query handlers are separate: commands mutate aggregates and queries read through a read model on the same database. There is no separate read store, no event sourcing and no replay. The layers are defined in [ARCH-02](overview.md#arch-02), the dependency rule in [ARCH-03](overview.md#arch-03) and the command/query split in [ARCH-04](overview.md#arch-04).
 - <a id="adr-01-3"></a>**ADR-01.3 Consequences.** Each external technology sits behind a port, so swaps are adapter changes and are tested by port contract tests ([XC-07](overview.md#xc-07)). Queries can use hand-written SQL and views without going through aggregates. The cost is extra indirection (protocols, DTOs, mapping code) that a PoC of this size would otherwise skip. Because there is no event store, history comes only from the audit log ([ADR-13](#adr-13)).
 - <a id="adr-01-4"></a>**ADR-01.4 Alternatives.** A layered or transaction-script design is quicker to start, but couples the business logic to SQLAlchemy, DBOS and HTTP, which are exactly the parts we expect to replace. Full CQRS with event sourcing was rejected by the user. It also buys nothing here, because the index can be rebuilt from its sources ([SCOPE-07](../README.md#scope-07)). Vertical slices without ports leave the adapter swaps above unprotected.
@@ -20,7 +20,7 @@ Refs: [ARCH-02](overview.md#arch-02), [ARCH-03](overview.md#arch-03), [ARCH-04](
 
 Status: Accepted, 2026-11-10.
 
-- <a id="adr-02-1"></a>**ADR-02.1 Context.** The critical libraries are Python-first or Python-only: e-mail and PST parsing (extract-msg, pypff), OCRmyPDF, the official MCP SDK, DBOS Transact, and the Voyage and OpenAI clients. The team needs one language across workers, API and MCP server.
+- <a id="adr-02-1"></a>**ADR-02.1 Context.** The critical libraries are Python-first or Python-only: e-mail and PST parsing (extract-msg, pypff), OCRmyPDF, the official MCP SDK, DBOS Transact, and OpenAI-compatible HTTP clients for the local model endpoints (httpx). The team needs one language across workers, API and MCP server.
 - <a id="adr-02-2"></a>**ADR-02.2 Decision.** Use Python 3.12 in a single uv-managed repository with one package, `docstore`. FastAPI and Pydantic v2 serve HTTP and the DTOs. Persistence uses SQLAlchemy 2.0 Core (not the ORM) with psycopg 3, and Alembic handles migrations. The module layout is in [MOD-01](overview.md#mod-01).
 - <a id="adr-02-3"></a>**ADR-02.3 Consequences.** Choosing Core over the ORM keeps domain classes plain: repositories map rows explicitly, and the read model is plain SQL ([ADP-08](ports-adapters.md#adp-08)). CPU-heavy work (OCR, parsing) runs in worker processes and subprocesses, not threads, so the GIL is not a bottleneck. Python's weaker static guarantees are offset by Pydantic validation at the boundaries and typed `Protocol` ports.
 - <a id="adr-02-4"></a>**ADR-02.4 Alternatives.** Go has better concurrency and a single binary, but lacks mature MSG, PST and OCR tooling and has no DBOS SDK at the same level. TypeScript has a strong MCP SDK but weak legal-format extraction. The SQLAlchemy ORM with imperative mapping is workable but hides the SQL that hybrid search and permission filters depend on. Django's ORM and app model conflict with the hexagonal layering.
@@ -46,8 +46,8 @@ Refs: [ADP-08](ports-adapters.md#adp-08), [ADP-09](ports-adapters.md#adp-09), [A
 
 Status: Accepted, 2026-11-10.
 
-- <a id="adr-04-1"></a>**ADR-04.1 Context.** A full ingestion of 100 GB runs for days, and enrichment on the local LLM dominates that time ([ADR-05.3](#adr-05-3)). The run must survive worker and database restarts, resume without redoing completed steps, never create duplicates, cap concurrency on the GPU and OCR, and respect the embedding API's rate limits ([F-04](../features.md#f-04), [SC-08](../success-criteria.md#sc-08), [SC-09](../success-criteria.md#sc-09)). The PoC should not add another stateful service to operate.
-- <a id="adr-04-2"></a>**ADR-04.2 Decision.** Use DBOS Transact (Python, MIT licence). Workflows and steps are checkpointed in a DBOS system database on the existing Postgres instance. DBOS queues provide per-queue concurrency caps and rate limiters. Workflow IDs are deterministic, so starting the same work twice is a no-op. The engine is an inbound adapter whose steps call application commands ([ARCH-08](overview.md#arch-08), [ADP-05](ports-adapters.md#adp-05)). The application controls it through [PORT-18](ports-adapters.md#port-18). The workflows are defined in [WF-01](ingestion.md#wf-01) to [WF-05](ingestion.md#wf-05).
+- <a id="adr-04-1"></a>**ADR-04.1 Context.** A full ingestion of 100 GB runs for days, and enrichment on the local LLM dominates that time ([ADR-17.3](#adr-17-3)). The run must survive worker and database restarts, resume without redoing completed steps, never create duplicates, cap concurrency on the GPU and OCR, apply back-pressure from local model endpoints, and run LLM enrichment as a separately controlled stage ([ADR-17](#adr-17)) ([F-04](../features.md#f-04), [SC-08](../success-criteria.md#sc-08), [SC-09](../success-criteria.md#sc-09)). The PoC should not add another stateful service to operate.
+- <a id="adr-04-2"></a>**ADR-04.2 Decision.** Use DBOS Transact (Python, MIT licence). Workflows and steps are checkpointed in a DBOS system database on the existing Postgres instance. DBOS queues provide per-queue global and per-worker concurrency caps ([WF-04.2](ingestion.md#wf-04-2)), so the stage-2 `enrich` queue is capped and controlled independently of stage 1. Workflow IDs are deterministic, so starting the same work twice is a no-op. The engine is an inbound adapter whose steps call application commands ([ARCH-08](overview.md#arch-08), [ADP-05](ports-adapters.md#adp-05)). The application controls it through [PORT-18](ports-adapters.md#port-18). The workflows are defined in [WF-01](ingestion.md#wf-01) to [WF-07](ingestion.md#wf-07).
 - <a id="adr-04-3"></a>**ADR-04.3 Consequences.**
   - No extra infrastructure is needed: the workers are the engine, and the only dependency is Postgres.
   - Workflow functions must be deterministic, and every step must be safe to re-execute ([ING-18](ingestion.md#ing-18)), because a step that crashed mid-way is run again.
@@ -59,7 +59,7 @@ Status: Accepted, 2026-11-10.
   - Prefect 3 suits flow-level orchestration, but needs a server and has awkward per-item granularity at millions of tasks.
   - Hatchet is Postgres-backed but runs as a separate engine service.
   - Procrastinate (a Postgres job queue) gives durable jobs, but no step checkpoints or workflow state, so we would write the state machine ourselves.
-  - Celery with Redis provides neither durable step state nor first-class rate limiting.
+  - Celery with Redis has no durable step state, and no per-queue global concurrency caps across workers.
   - A hand-rolled state machine over the source-item table is possible, but re-implements retries, recovery and throttling.
 - <a id="adr-04-5"></a>**ADR-04.5 Revisit when** multi-host workers need automatic cross-host recovery, when the system database's write volume measurably competes with search on the shared instance, or when an operations team requires an orchestration UI. Candidates are DBOS Conductor, a separate Postgres for the system database, or Temporal behind the same [PORT-18](ports-adapters.md#port-18).
 
@@ -68,50 +68,54 @@ Refs: [WF-01](ingestion.md#wf-01), [WF-04](ingestion.md#wf-04), [WF-05](ingestio
 <a id="adr-05"></a>
 ### ADR-05 Local LLM via Ollama for enrichment
 
-Status: Accepted, 2026-11-10.
+Status: Superseded by [ADR-15](#adr-15), 2026-11-10.
 
-- <a id="adr-05-1"></a>**ADR-05.1 Context.** The user decided that ingestion enriches every document with an LLM, producing tags, document type, case-type suggestion, parties, dates and a summary ([F-09](../features.md#f-09)). This reverses the research's zero-LLM recommendation. Full document text is far more sensitive than chunk embeddings, so the LLM must run on the local machine. The PoC host has at most one consumer GPU.
-- <a id="adr-05-2"></a>**ADR-05.2 Decision.** Serve the model with Ollama through its OpenAI-compatible endpoint. The default model is Qwen3-14B-Instruct, quantised Q4_K_M, on a 24 GB GPU. Qwen3-8B is the fallback for CPU-only or smaller GPUs. Calls use temperature 0 and JSON-schema structured output. vLLM is a drop-in alternative behind the same [PORT-13](ports-adapters.md#port-13), because both expose the OpenAI API. The LLM is used only at ingest ([SCOPE-05](../README.md#scope-05)). The runtime contract is in [LLM-01](ingestion.md#llm-01).
-- <a id="adr-05-3"></a>**ADR-05.3 Consequences.**
+The Ollama default and the Qwen3-14B / 24 GB GPU sizing no longer apply; serving, model choice and sizing are now decided in [ADR-15](#adr-15) and the stage placement of enrichment in [ADR-17](#adr-17). The body below is kept as history.
+
+- <a id="adr-05-1"></a>**ADR-05.1 Context.** **Superseded (history):** current decision in [ADR-15.1](#adr-15-1). The user decided that ingestion enriches every document with an LLM, producing tags, document type, case-type suggestion, parties, dates and a summary ([F-09](../features.md#f-09)). This reverses the research's zero-LLM recommendation. Full document text is far more sensitive than chunk embeddings, so the LLM must run on the local machine. The PoC host has at most one consumer GPU.
+- <a id="adr-05-2"></a>**ADR-05.2 Decision.** **Superseded (history):** current decision in [ADR-15.2](#adr-15-2). Serve the model with Ollama through its OpenAI-compatible endpoint. The default model is Qwen3-14B-Instruct, quantised Q4_K_M, on a 24 GB GPU. Qwen3-8B is the fallback for CPU-only or smaller GPUs. Calls use temperature 0 and JSON-schema structured output. vLLM is a drop-in alternative behind the same [PORT-13](ports-adapters.md#port-13), because both expose the OpenAI API. The LLM is used only at ingest ([SCOPE-05](../README.md#scope-05)). The runtime contract is in [LLM-01](ingestion.md#llm-01).
+- <a id="adr-05-3"></a>**ADR-05.3 Consequences.** **Superseded (history):** current decision in [ADR-15.3](#adr-15-3).
   - No document text reaches a third party through enrichment.
   - At a few seconds per document on one GPU, enrichment is expected to be the slowest stage and therefore the bottleneck of a 100 GB run. The measured rate feeds the projection in [SC-09](../success-criteria.md#sc-09) and [DEP-08](overview.md#dep-08).
   - Work avoidance matters: exact duplicates are enriched only once, and inputs are bounded excerpts ([LLM-02](ingestion.md#llm-02)).
   - Switching to vLLM with continuous batching is the main throughput lever.
   - Qwen3's multilingual ability fits mixed-language firm content. Quantisation and model choice must be pinned and stamped in provenance ([LLM-04](ingestion.md#llm-04)), because a model change invalidates enrichment ([XC-06](overview.md#xc-06)).
-- <a id="adr-05-4"></a>**ADR-05.4 Alternatives.**
+- <a id="adr-05-4"></a>**ADR-05.4 Alternatives.** **Superseded (history):** current decision in [ADR-15.4](#adr-15-4).
   - Zero-LLM ingestion (the research recommendation) cannot produce semantic tags, document types or summaries.
   - A hosted LLM API sends whole documents off-premises, which is ruled out by [SCOPE-04](../README.md#scope-04).
   - Llama 3.1 8B and Mistral Small showed weaker multilingual extraction and weaker schema adherence at comparable size.
   - Running llama.cpp server directly gives less model management.
   - Making vLLM the default needs more VRAM headroom and set-up than a PoC laptop or workstation reliably has.
-- <a id="adr-05-5"></a>**ADR-05.5 Revisit when** the measured enrichment rate makes the projected 100 GB duration unacceptable (move to vLLM, a larger GPU or selective enrichment), or when gold-set quality misses [SC-04](../success-criteria.md#sc-04) (try a larger model or prompt changes under [LLM-04](ingestion.md#llm-04)).
+- <a id="adr-05-5"></a>**ADR-05.5 Revisit when** (**Superseded (history):** current decision in [ADR-15.5](#adr-15-5)) the measured enrichment rate makes the projected 100 GB duration unacceptable (move to vLLM, a larger GPU or selective enrichment), or when gold-set quality misses [SC-04](../success-criteria.md#sc-04) (try a larger model or prompt changes under [LLM-04](ingestion.md#llm-04)).
 
 Refs: [ADP-13](ports-adapters.md#adp-13), [DEP-07](overview.md#dep-07), [LLM-01](ingestion.md#llm-01), [SCOPE-05](../README.md#scope-05)
 
 <a id="adr-06"></a>
 ### ADR-06 Embeddings via external API behind a port
 
-Status: Accepted, 2026-11-10.
+Status: Superseded by [ADR-16](#adr-16), 2026-11-10.
 
-- <a id="adr-06-1"></a>**ADR-06.1 Context.** The user decided that embeddings are computed by an external API. On a single-GPU PoC host, the GPU is already saturated by enrichment ([ADR-05.3](#adr-05-3)), so a local embedding model would compete with it. Hosted embedding models give strong multilingual retrieval quality without any operational work. The research's preferred option was local embeddings, chosen for confidentiality.
-- <a id="adr-06-2"></a>**ADR-06.2 Decision.**
+The user requires all inference local with zero runtime egress; embeddings are now local ([ADR-16](#adr-16)). The body below is kept as history.
+
+- <a id="adr-06-1"></a>**ADR-06.1 Context.** **Superseded (history):** current decision in [ADR-16.1](#adr-16-1). The user decided that embeddings are computed by an external API. On a single-GPU PoC host, the GPU is already saturated by enrichment ([ADR-05.3](#adr-05-3)), so a local embedding model would compete with it. Hosted embedding models give strong multilingual retrieval quality without any operational work. The research's preferred option was local embeddings, chosen for confidentiality.
+- <a id="adr-06-2"></a>**ADR-06.2 Decision.** **Superseded (history):** current decision in [ADR-16.2](#adr-16-2).
   - Embeddings are computed through [PORT-12](ports-adapters.md#port-12).
   - The default is Voyage `voyage-3.5` (1024 dimensions, multilingual), called with separate document and query input types ([ADP-11](ports-adapters.md#adp-11)).
   - The alternates are `voyage-law-2` and OpenAI `text-embedding-3-large` with `dimensions=1024` ([ADP-12](ports-adapters.md#adp-12)), so the vector column stays 1024-d.
   - Every chunk is stamped with the model ID and dimension, and queries always use the model of the indexed vectors.
   - We accept that chunk text and query text leave the machine. The PoC is therefore restricted to sample or consented data ([SCOPE-04](../README.md#scope-04)).
-- <a id="adr-06-3"></a>**ADR-06.3 Consequences.**
+- <a id="adr-06-3"></a>**ADR-06.3 Consequences.** **Superseded (history):** current decision in [ADR-16.3](#adr-16-3).
   - Egress must be limited to the provider host ([XC-02](overview.md#xc-02)).
   - Rate limits and 429 responses are a normal operating condition and are handled by the embed queue limiter ([WF-04](ingestion.md#wf-04)).
   - A full 100 GB pass has a token cost per the projection of [DEP-08.6](overview.md#dep-08-6).
   - The query-time vector leg depends on the API being reachable. If it is not, search must degrade to the keyword leg rather than fail ([QRY-01](application.md#qry-01)).
   - Changing the model means re-embedding every chunk ([ADR-12](#adr-12), [ING-17](ingestion.md#ing-17)).
-- <a id="adr-06-4"></a>**ADR-06.4 Alternatives.**
+- <a id="adr-06-4"></a>**ADR-06.4 Alternatives.** **Superseded (history):** current decision in [ADR-16.4](#adr-16-4).
   - A local bge-m3 under Text Embeddings Inference keeps all text on premises, but competes with the LLM for the GPU. It is the planned production swap behind [PORT-12](ports-adapters.md#port-12).
   - OpenAI `text-embedding-3-small` is cheaper but has lower retrieval quality.
   - Cohere embed-multilingual is a comparable alternate, but no adapter is planned.
   - Using the LLM's own hidden states as embeddings gives poor retrieval quality.
-- <a id="adr-06-5"></a>**ADR-06.5 Revisit when** any non-consented client data is to be processed, when the firm's policy or DPIA rules out off-premises processing of document text, or when the PoC moves to production. The default answer then is a local embedding adapter plus a full re-embed.
+- <a id="adr-06-5"></a>**ADR-06.5 Revisit when** (**Superseded (history):** current decision in [ADR-16.5](#adr-16-5)) any non-consented client data is to be processed, when the firm's policy or DPIA rules out off-premises processing of document text, or when the PoC moves to production. The default answer then is a local embedding adapter plus a full re-embed.
 
 Refs: [PORT-12](ports-adapters.md#port-12), [ADP-11](ports-adapters.md#adp-11), [ADP-12](ports-adapters.md#adp-12), [XC-02](overview.md#xc-02), [SCOPE-04](../README.md#scope-04)
 
@@ -147,7 +151,7 @@ Refs: [ADP-14](ports-adapters.md#adp-14), [ADP-15](ports-adapters.md#adp-15), [A
 Status: Accepted, 2026-11-10.
 
 - <a id="adr-08-1"></a>**ADR-08.1 Context.** A document's client and matter assignment decides who may see it. A wrong auto-assignment can leak a document across an ethical wall, so assignment errors are both a confidentiality problem and a quality problem. Strong deterministic signals exist: folder paths, SharePoint sites, matter codes in file names and subjects, client e-mail domains and mailbox owners. The practice-management system (PMS) is the authority for clients and matters. LLM output is useful but can hallucinate.
-- <a id="adr-08-2"></a>**ADR-08.2 Decision.** Deterministic rules from a versioned rule set ([DM-15](domain.md#dm-15)), together with inheritance from the family or thread, are the primary assignment method. The LLM only proposes candidates and adjusts confidence: an assignment backed only by the LLM never auto-accepts. Confidence bands decide between auto-accept and review ([TAX-04](domain.md#tax-04)). Human decisions take precedence and survive reprocessing; the precedence invariant is in [DM-10](domain.md#dm-10). Reconciliation of the signals is [CMD-12](application.md#cmd-12).
+- <a id="adr-08-2"></a>**ADR-08.2 Decision.** Deterministic rules from a versioned rule set ([DM-15](domain.md#dm-15)), together with inheritance from the family or thread, are the primary assignment method. The LLM only proposes candidates; it never changes the confidence of `rule` or `inherited` proposals, so it cannot cause an auto-accept of client or matter ([DM-10.8](domain.md#dm-10-8)), and an assignment backed only by the LLM never auto-accepts. Confidence bands decide between auto-accept and review ([TAX-04](domain.md#tax-04)). Human decisions take precedence and survive reprocessing; the precedence invariant is in [DM-10](domain.md#dm-10). Reconciliation of the signals is [CMD-12](application.md#cmd-12).
 - <a id="adr-08-3"></a>**ADR-08.3 Consequences.** Auto-accepted assignments are explainable, because each one cites a rule version. Precision is protected at the cost of review volume. The review queue ([F-10](../features.md#f-10)) is therefore a core PoC feature, not an extra. Rule quality becomes the main tuning lever, so rule sets are versioned and re-application is version-driven ([XC-06](overview.md#xc-06)).
 - <a id="adr-08-4"></a>**ADR-08.4 Alternatives.** LLM-first classification gives higher recall but unexplainable errors that can breach walls. A supervised classifier trained on PMS-labelled documents is promising, but there are not enough labels in the PoC. It is a later option that can sit behind the same reconciliation. Manual-only assignment does not scale to 2M documents.
 - <a id="adr-08-5"></a>**ADR-08.5 Revisit when** review volume on the sample makes review at 100 GB impractical despite [SC-03](../success-criteria.md#sc-03) precision. Options then are to tighten the rules, add a trained classifier as another signal, or allow LLM-only auto-accept for low-risk roles such as case type, but not for client or matter.
@@ -187,7 +191,7 @@ Status: Accepted, 2026-11-10.
 
 - <a id="adr-11-1"></a>**ADR-11.1 Context.** Reprocessing (new parser, prompt or model) must not depend on sources staying reachable or unchanged, and PST archives are expensive to reopen. Users need to download originals. Duplicates are frequent in legal corpora, especially e-mail attachments.
 - <a id="adr-11-2"></a>**ADR-11.2 Decision.** Originals and extracted text are stored on a local filesystem volume, keyed by sha256 under a fan-out directory layout ([ADP-20](ports-adapters.md#adp-20)), behind [PORT-17](ports-adapters.md#port-17). MinIO or S3 is a later swap behind the same port.
-- <a id="adr-11-3"></a>**ADR-11.3 Consequences.** Byte-identical content is stored once, and writes are idempotent because the key is the content. Reprocessing reads local copies. The store holds a copy of confidential originals, so it falls under the PoC data policy ([SCOPE-04](../README.md#scope-04)). Removing a document requires reference counting across duplicates, which is deferred along with hard-delete ([SCOPE-06](../README.md#scope-06)). The volume size is part of [DEP-08](overview.md#dep-08).
+- <a id="adr-11-3"></a>**ADR-11.3 Consequences.** Byte-identical content is stored once, and writes are idempotent because the key is the content. Reprocessing reads local copies. The store holds a copy of confidential originals, so it falls under the PoC data policy ([SCOPE-04.6](../README.md#scope-04-6)) and stays on premises ([SCOPE-04.5](../README.md#scope-04-5)). Removing a document requires reference counting across duplicates, which is deferred along with hard-delete ([SCOPE-06](../README.md#scope-06)). The volume size is part of [DEP-08](overview.md#dep-08).
 - <a id="adr-11-4"></a>**ADR-11.4 Alternatives.** Keeping references only and re-fetching from the source makes reprocessing slow and non-reproducible when sources change. MinIO from day one adds a service with no PoC benefit. Postgres `bytea` or large objects would bloat the database and its backups.
 - <a id="adr-11-5"></a>**ADR-11.5 Revisit when** storage must be shared across hosts, needs object lock or retention, or outgrows a single volume.
 
@@ -203,11 +207,12 @@ Status: Accepted, 2026-11-10.
   - Chunks target about 512 tokens with about 64 tokens of overlap, preferring paragraph and heading boundaries ([ING-12](ingestion.md#ing-12)).
   - Vectors are stored as pgvector `halfvec(1024)` with an HNSW index (cosine). Build parameters start at m=16 and ef_construction=64, and `ef_search` and iterative scan are tuned against [SC-05](../success-criteria.md#sc-05) and [SC-06](../success-criteria.md#sc-06) ([ADP-09](ports-adapters.md#adp-09)).
   - The chunker version and embedding model are stamped on every chunk ([DM-05](domain.md#dm-05), [XC-06](overview.md#xc-06)).
+  - Token counts use the pinned embedding-model tokenizer ([ING-12.3](ingestion.md#ing-12-3)).
 - <a id="adr-12-3"></a>**ADR-12.3 Consequences.** Half precision halves vector storage and index memory compared with `vector(1024)`, with negligible recall loss for retrieval. Projected sizes are in [DEP-08](overview.md#dep-08). A new chunker version means re-chunking and re-embedding. A new embedding model means re-embedding all chunks, during which queries must use the model that matches the indexed vectors ([ING-17](ingestion.md#ing-17)). Building an HNSW index over 10M vectors takes hours, so bulk loads build the index after loading.
 - <a id="adr-12-4"></a>**ADR-12.4 Alternatives.** 256-token chunks double the vector count and fragment clauses. 1024-token chunks dilute similarity and inflate prompts for downstream agents. Full-precision `vector(1024)` doubles the memory. IVFFlat needs training and recalls worse under filters. Semantic or layout-aware chunking is later work ([ADR-07.5](#adr-07-5)). Binary or int8 quantisation and pgvectorscale's DiskANN are scale levers kept in reserve.
 - <a id="adr-12-5"></a>**ADR-12.5 Revisit when** the synthetic load in [SC-07](../success-criteria.md#sc-07) misses its p95 target or the index no longer fits in RAM, in which case quantisation or DiskANN come next, or when relevance evaluation shows chunk size as the limiting factor.
 
-Refs: [DM-05](domain.md#dm-05), [ING-12](ingestion.md#ing-12), [ADP-09](ports-adapters.md#adp-09), [DEP-08](overview.md#dep-08)
+Refs: [DM-05](domain.md#dm-05), [ING-12](ingestion.md#ing-12), [ADP-09](ports-adapters.md#adp-09), [DEP-08](overview.md#dep-08), [ADR-16](#adr-16)
 
 <a id="adr-13"></a>
 ### ADR-13 In-process domain events, same-database audit
@@ -234,3 +239,98 @@ Status: Accepted, 2026-11-10.
 - <a id="adr-14-5"></a>**ADR-14.5 Revisit when** the store moves towards production users or the review workload needs bulk, keyboard-driven workflows.
 
 Refs: [ADP-02](ports-adapters.md#adp-02), [ADP-03](ports-adapters.md#adp-03), [F-21](../features.md#f-21)
+
+<a id="adr-15"></a>
+### ADR-15 Local LLM serving on a 96 GB inference host
+
+Status: Accepted, 2026-11-10.
+
+- <a id="adr-15-1"></a>**ADR-15.1 Context.** The user's change request requires everything local, zero runtime egress, models of up to 96 GB, and OpenAI-compatible endpoints ([SCOPE-04.5](../README.md#scope-04-5), [SCOPE-01.4](../README.md#scope-01-4)). Enrichment needs the stage-2 rate assumed for the 100 GB projection ([DEP-08.6](overview.md#dep-08-6), [SC-09.5](../success-criteria.md#sc-09-5)), structured JSON output ([SC-04.8](../success-criteria.md#sc-04-8)) and multilingual quality. [ADR-05](#adr-05) sized for a 24 GB Ollama host and no longer fits this brief.
+- <a id="adr-15-2"></a>**ADR-15.2 Decision.**
+  - (a) "Up to a 96 GB model" means at most 96 GB of accelerator memory, or unified memory, on the inference host for model weights plus KV cache.
+  - (b) Memory split assumption: the LLM, the embedding model ([ADR-16](#adr-16)) and the KV cache are co-resident on one 96 GB device, with static per-service fractions ([DEP-08.8](overview.md#dep-08-8)).
+  - (c) The default LLM is gpt-oss-120b, MXFP4 weights as published; its memory share is in [DEP-08.8](overview.md#dep-08-8).
+  - (d) The fallback LLM is Qwen3-30B-A3B-Instruct-2507, FP8, non-thinking; its memory share is in [DEP-08.8](overview.md#dep-08-8). It covers multilingual quality fallback, GPUs with at least 48 GB, and CPU runs as GGUF.
+  - (e) The default runtime is vLLM, with OpenAI-compatible `/v1/chat/completions` and JSON-schema structured output. llama.cpp server and Ollama are configuration alternatives ([DEP-07.6](overview.md#dep-07-6)).
+  - (f) Model names, weights digests and parameters are configuration, never code ([XC-04](overview.md#xc-04)).
+  - (g) Weights are provisioned once at setup and pinned by digest ([DEP-10](overview.md#dep-10)).
+  - The runtime contract is owned by [LLM-01](ingestion.md#llm-01) and the service by [DEP-07](overview.md#dep-07).
+- <a id="adr-15-3"></a>**ADR-15.3 Consequences.**
+  - No text leaves the host.
+  - The GPU is shared with embedding, which needs the sharing policy of [WF-04.9](ingestion.md#wf-04-9).
+  - The mixture-of-experts design (about 5B active parameters) is expected to give high batched throughput. This is an estimate, not a benchmark, and is measured by [SC-09.5](../success-criteria.md#sc-09-5).
+  - Reasoning tokens add output length. They are bounded by `reasoning_effort=low` and `MAX_TOKENS` ([LLM-01](ingestion.md#llm-01)).
+  - MXFP4 needs a GPU generation supported by the kernels of the pinned vLLM ([DEP-08.2](overview.md#dep-08-2)).
+  - Model fit within 96 GB is a hard gate ([SC-16.4](../success-criteria.md#sc-16-4)).
+  - Model licences are recorded in `models.lock` ([DEP-10.1](overview.md#dep-10-1)).
+- <a id="adr-15-4"></a>**ADR-15.4 Alternatives.**
+  - Qwen3-Next-80B-A3B-Instruct FP8 (about 80 GB, estimate) is strong and efficient, but leaves too little memory for the embedder and the KV cache on one device. It is the first candidate if embedding moves to its own device.
+  - Llama 3.3 70B at Q8 (about 75 GB, estimate) is dense, with much lower throughput and little KV headroom.
+  - Qwen3-32B at BF16 (about 66 GB, estimate) is dense and slower.
+  - Ollama as the default runtime has weaker batching and fewer server controls.
+  - A hosted LLM API violates [SCOPE-04.5](../README.md#scope-04-5).
+  - Unified-memory hosts can hold the models but leave too little RAM for Postgres on the same machine.
+- <a id="adr-15-5"></a>**ADR-15.5 Revisit when** gold-set quality misses [SC-04](../success-criteria.md#sc-04), especially for multilingual content (switch to the fallback, or to Qwen3-Next with embedding moved); schema-valid output falls below [SC-04.8](../success-criteria.md#sc-04-8) for the model and runtime; [SC-16.4](../success-criteria.md#sc-16-4) fails or KV-cache preemptions cap throughput below [SC-09.5](../success-criteria.md#sc-09-5); a second accelerator becomes available (move `embed` to it, which changes only its base URL); or the zero-egress posture must change ([SCOPE-04.7](../README.md#scope-04-7)).
+
+Refs: [LLM-01](ingestion.md#llm-01), [DEP-07](overview.md#dep-07), [DEP-08.8](overview.md#dep-08-8), [DEP-10](overview.md#dep-10), [ADP-13](ports-adapters.md#adp-13), [WF-04.9](ingestion.md#wf-04-9), [SC-16.4](../success-criteria.md#sc-16-4), [ADR-05](#adr-05)
+
+<a id="adr-16"></a>
+### ADR-16 Local embedding model with Matryoshka truncation to 1024 dims
+
+Status: Accepted, 2026-11-10.
+
+- <a id="adr-16-1"></a>**ADR-16.1 Context.** Embeddings must be local, which supersedes [ADR-06](#adr-06). The `halfvec(1024)` schema and HNSW sizing of [ADR-12](#adr-12) should stay. Embedding is non-generative and deterministic for pinned weights, so it belongs to stage 1 ([ADR-17](#adr-17)).
+- <a id="adr-16-2"></a>**ADR-16.2 Decision.**
+  - The default model is Qwen3-Embedding-4B (BF16; memory share in [DEP-08.8](overview.md#dep-08-8)), served by vLLM's pooling runner on `/v1/embeddings` ([DEP-09](overview.md#dep-09)).
+  - Vectors are truncated client-side to the first 1024 dimensions (Matryoshka) and L2-normalised ([ADP-12.3](ports-adapters.md#adp-12-3)).
+  - Queries get an instruction prefix; documents get none ([ADP-12](ports-adapters.md#adp-12)).
+  - Every chunk is stamped with the `embedding_model` stamp of [XC-06.1](overview.md#xc-06-1), and queries use the model of the indexed vectors ([DM-05.6](domain.md#dm-05-6), [XC-06](overview.md#xc-06)).
+  - Alternatives by configuration: Qwen3-Embedding-8B when memory allows ([DEP-08.8](overview.md#dep-08-8)), and BGE-M3 (native 1024 dimensions) as the lightweight and CPU fallback.
+- <a id="adr-16-3"></a>**ADR-16.3 Consequences.**
+  - There are no rate limits, API keys or token costs.
+  - The query-time vector leg depends on the local endpoint and degrades to keyword search when it is unavailable ([QRY-01](application.md#qry-01)).
+  - Embedding competes with the LLM for GPU time ([WF-04.9](ingestion.md#wf-04-9)).
+  - Truncation may cost some recall compared with full dimensions. This is measured by [SC-05](../success-criteria.md#sc-05), not assumed.
+  - The chunker counts tokens with the embedding tokenizer ([ING-12.3](ingestion.md#ing-12-3)).
+  - A model change means a full re-embed ([ING-17.5](ingestion.md#ing-17-5)).
+- <a id="adr-16-4"></a>**ADR-16.4 Alternatives.**
+  - Full 2,560 or 4,096 dimensions need a schema change and about 2.5–4× the vector memory.
+  - External embedding APIs (the former [ADR-06](#adr-06)) violate [SCOPE-04.5](../README.md#scope-04-5).
+  - Qwen3-Embedding-0.6B is cheaper to run but of lower quality.
+  - Text Embeddings Inference (TEI) as the runtime was not adopted: it adds a fourth runtime with its own provisioning, while vLLM, llama.cpp server and Ollama already serve `/v1/embeddings` ([DEP-09.4](overview.md#dep-09-4)).
+  - The LLM's own hidden states give poor retrieval quality.
+- <a id="adr-16-5"></a>**ADR-16.5 Revisit when** [SC-05](../success-criteria.md#sc-05) relevance misses (try the 8B model or more dimensions), stage-1 embedding throughput misses [SC-09.5](../success-criteria.md#sc-09-5) (move embedding to its own device or use a smaller model), or [SC-16.4](../success-criteria.md#sc-16-4) fails.
+
+Refs: [PORT-12](ports-adapters.md#port-12), [ADP-12](ports-adapters.md#adp-12), [DEP-09](overview.md#dep-09), [ING-13](ingestion.md#ing-13), [ADR-12](#adr-12), [ADR-06](#adr-06)
+
+<a id="adr-17"></a>
+### ADR-17 Two-stage ingestion: deterministic stage 1, LLM enrichment stage 2
+
+Status: Accepted, 2026-11-10.
+
+- <a id="adr-17-1"></a>**ADR-17.1 Context.** The user requires deterministic ingestion first and LLM work second. In-line enrichment made the LLM the gate to searchability and the bottleneck of a 100 GB run. Prompt and LLM changes must be re-runnable without touching extraction, chunks or vectors.
+- <a id="adr-17-2"></a>**ADR-17.2 Decision.**
+  - The stage split and the handoff between stages follow [ING-21](ingestion.md#ing-21) and [ING-14.4](ingestion.md#ing-14-4).
+  - Stage 2 has its own run kind, workflows and queue ([DM-17](domain.md#dm-17), [WF-06](ingestion.md#wf-06), [WF-07](ingestion.md#wf-07), queue `enrich`).
+  - Reconciliation runs in both stages under the unchanged [DM-10.6](domain.md#dm-10-6) policy. Stage-1 reconciliation takes `llm` proposals only from a current enrichment of the same text ([ING-11.1](ingestion.md#ing-11-1)), so stage-1 results for new text never depend on LLM output; excluding `llm` proposals from stage 1 altogether was rejected because a stage-1-only reprocess would then ignore valid current proposals.
+  - Enrichment reaches search through a metadata-only index update ([ING-20](ingestion.md#ing-20)). The keys it writes live in a narrow per-document table, not on `chunks` ([DM-05.3](domain.md#dm-05-3), [ADP-09.5](ports-adapters.md#adp-09-5)): an UPDATE of chunk rows would create new tuples and, whenever it is not HOT, a new entry in every index on `chunks`, including the HNSW graph and the BM25 index, about 10M re-insertions per full stage-2 pass at 100 GB. The rejected alternative kept the keys on `chunks` out of every index with a reduced `fillfactor` so updates stay HOT; it depends on page free space and row width, and loses index support for those filters anyway.
+  - There is no summary embedding in the PoC.
+  - LLM-only client and matter proposals never auto-accept ([ADR-08](#adr-08)).
+- <a id="adr-17-3"></a>**ADR-17.3 Consequences.**
+  - The corpus becomes searchable days earlier.
+  - Enrichment-based filters and facets are incomplete until stage 2 catches up. This is surfaced as `enrichment_pending` ([QRY-01](application.md#qry-01)).
+  - Review tasks may open in stage 1 and be updated in stage 2 ([DM-13.4](domain.md#dm-13-4)).
+  - Each ingest run has a companion enrich run ([CMD-02](application.md#cmd-02)).
+  - Stage 2 cannot change access ([DM-10.8](domain.md#dm-10-8)).
+  - Enrichment is the slowest stage, but it is off the critical path for search.
+  - A GPU-sharing policy is needed ([WF-04.9](ingestion.md#wf-04-9)).
+  - Stage 2 runs at the reduced admission window for most of stage 1, so its 100 GB target is counted from stage-1 completion, not from run start ([SC-09.6](../success-criteria.md#sc-09-6)). At the assumed rates a 14-day target from run start would need about 1.5 times the assumed stage-2 rate (estimate, [DEP-08.6](overview.md#dep-08-6)). A higher required stage-2 rate was rejected because it is unproven on the reference GPU, and a larger default `ENRICH_WINDOW_WHEN_STAGE1_BUSY` because it slows stage-1 embedding and so delays searchability.
+- <a id="adr-17-4"></a>**ADR-17.4 Alternatives.**
+  - In-line enrichment (the previous [WF-02](ingestion.md#wf-02)) gates search on the LLM.
+  - Stage 2 as a child of the stage-1 item workflow cannot be paused or re-run independently.
+  - A broker-based handoff adds infrastructure ([ADR-13](#adr-13)).
+  - Summary embedding doubles vector work and couples prompt changes to re-embedding, so it is deferred ([F-09.11](../features.md#f-09-11)).
+  - Running the LLM before the rules loses candidate-matter grounding ([ING-09.2](ingestion.md#ing-09-2)).
+- <a id="adr-17-5"></a>**ADR-17.5 Revisit when** stage-2 lag makes enrichment filters unusable for users (add the prioritised stage 2 of [F-22.8](../features.md#f-22-8)), or evaluation shows that summary search adds relevance (add a stage-2 summary-embedding step with its own stamp).
+
+Refs: [ING-21](ingestion.md#ing-21), [ING-14](ingestion.md#ing-14), [WF-06](ingestion.md#wf-06), [WF-07](ingestion.md#wf-07), [ING-19](ingestion.md#ing-19), [ING-20](ingestion.md#ing-20), [DM-10](domain.md#dm-10), [F-22](../features.md#f-22), [SC-16](../success-criteria.md#sc-16)

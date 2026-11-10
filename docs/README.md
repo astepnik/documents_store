@@ -1,6 +1,6 @@
 # Law-firm document store PoC: documentation
 
-Architecture and acceptance documentation for a local proof of concept of an AI-friendly document store. The store ingests a law firm's e-mail, Office, PDF, SharePoint and file-share content, enriches it with a local LLM, assigns it to clients, matters, handlers and case types, and serves permission-aware hybrid search to people and to AI agents over MCP.
+Architecture and acceptance documentation for a local proof of concept of an AI-friendly document store. The store ingests a law firm's e-mail, Office, PDF, SharePoint and file-share content, enriches it with a local LLM, assigns it to clients, matters, handlers and case types, and serves permission-aware hybrid search to people and to AI agents over MCP. Everything runs on premises: the LLM and the embedding model are served locally behind OpenAI-compatible endpoints, and the stack has zero runtime egress ([SCOPE-01](#scope-01), [SCOPE-04](#scope-04)). Ingestion has a deterministic stage 1 that makes documents searchable and an LLM stage 2 that enriches them ([GL-21](#gl-21), [GL-22](#gl-22)).
 
 This file owns the documentation conventions (CONV), the glossary (GL) and the PoC scope (SCOPE). Every other fact lives in the file that owns its ID; see [CONV-05](#conv-05).
 
@@ -18,7 +18,7 @@ Read the files in this order. Each step names the question the file answers.
 - <a id="conv-06-5"></a>**CONV-06.5** [architecture/domain.md](architecture/domain.md): entities, aggregates, invariants, domain events and taxonomies.
 - <a id="conv-06-6"></a>**CONV-06.6** [architecture/application.md](architecture/application.md): the commands and queries that form the application API.
 - <a id="conv-06-7"></a>**CONV-06.7** [architecture/ports-adapters.md](architecture/ports-adapters.md): the ports and the adapters that implement them, with PoC technology.
-- <a id="conv-06-8"></a>**CONV-06.8** [architecture/ingestion.md](architecture/ingestion.md): the durable ingestion workflow, pipeline steps and the LLM enrichment contract.
+- <a id="conv-06-8"></a>**CONV-06.8** [architecture/ingestion.md](architecture/ingestion.md): the two-stage durable ingestion (deterministic stage 1, LLM enrichment stage 2), its workflows and pipeline steps, and the LLM enrichment contract.
 - <a id="conv-06-9"></a>**CONV-06.9** [architecture/mcp.md](architecture/mcp.md): the MCP server, its tools and permission handling.
 - <a id="conv-06-10"></a>**CONV-06.10** [architecture/decisions.md](architecture/decisions.md): why each significant choice was made and what was rejected.
 - <a id="conv-06-11"></a>**CONV-06.11** Shortcut for reviewers of a single concern: start at the success criterion, follow its links to features, then to the commands, queries, ports and steps that realise them.
@@ -130,7 +130,7 @@ Each term is defined only to the depth needed for shared vocabulary. Structure, 
 | <a id="gl-04"></a>GL-04 | Family | A parent document (an e-mail or a container file) together with its attachments or embedded children. | [DM-03](architecture/domain.md#dm-03) |
 | <a id="gl-05"></a>GL-05 | Thread | A reconstructed e-mail conversation that links related messages. | [DM-06](architecture/domain.md#dm-06) |
 | <a id="gl-06"></a>GL-06 | Chunk | A token-bounded span of a document's text, indexed for both keyword and vector search. | [DM-05](architecture/domain.md#dm-05) |
-| <a id="gl-07"></a>GL-07 | Embedding | A dense vector for a chunk or a query, computed by the external embedding API and stamped with the model version. | [DM-05](architecture/domain.md#dm-05), [ADR-06](architecture/decisions.md#adr-06) |
+| <a id="gl-07"></a>GL-07 | Embedding | A dense vector for a chunk or a query, computed in stage 1 (and at query time) by the local embedding model behind a model endpoint ([GL-23](#gl-23)), truncated to 1024 dimensions and stamped with model, weights digest and dimension. | [DM-05](architecture/domain.md#dm-05), [ADR-16](architecture/decisions.md#adr-16) |
 | <a id="gl-08"></a>GL-08 | Client | A person or organisation the firm acts for. Clients are the top level of organisation. | [DM-07](architecture/domain.md#dm-07) |
 | <a id="gl-09"></a>GL-09 | Matter | A case or engagement for a client, with a case type, a responsible lawyer and an access group. | [DM-09](architecture/domain.md#dm-09) |
 | <a id="gl-10"></a>GL-10 | Case type | The practice-area classification of a matter, such as employment dispute or M&A. | [TAX-01](architecture/domain.md#tax-01) |
@@ -138,12 +138,15 @@ Each term is defined only to the depth needed for shared vocabulary. Structure, 
 | <a id="gl-12"></a>GL-12 | Assignment | A link from a document to a client, matter, handler or case type, with a method, a confidence and a status. | [DM-10](architecture/domain.md#dm-10) |
 | <a id="gl-13"></a>GL-13 | Ethical wall | An access restriction that hides a matter's documents, and the fact that the matter exists, from excluded principals. | [DM-16](architecture/domain.md#dm-16), [XC-01](architecture/overview.md#xc-01) |
 | <a id="gl-14"></a>GL-14 | Principal | The authenticated human or agent identity on whose behalf a query or command runs. | [DM-16](architecture/domain.md#dm-16), [PORT-03](architecture/ports-adapters.md#port-03) |
-| <a id="gl-15"></a>GL-15 | Enrichment | The attributes the local LLM derives at ingest: document type, tags, case-type suggestion, parties, dates and summary. | [DM-12](architecture/domain.md#dm-12), [LLM-03](architecture/ingestion.md#llm-03) |
+| <a id="gl-15"></a>GL-15 | Enrichment | The attributes the local LLM derives in stage 2 ([GL-22](#gl-22)): document type, tags, case-type suggestion, parties, dates and summary. | [DM-12](architecture/domain.md#dm-12), [LLM-03](architecture/ingestion.md#llm-03), [WF-07](architecture/ingestion.md#wf-07) |
 | <a id="gl-16"></a>GL-16 | Provenance | A record of how a value was produced (rule, LLM, human or inherited), with version, confidence and actor. | [DM-11](architecture/domain.md#dm-11) |
 | <a id="gl-17"></a>GL-17 | Hybrid search / RRF | Search that fuses a keyword (BM25) ranking and a vector ranking with Reciprocal Rank Fusion, under metadata and permission filters. | [QRY-01](architecture/application.md#qry-01), [ADR-03](architecture/decisions.md#adr-03) |
-| <a id="gl-18"></a>GL-18 | Ingestion run | One durable, resumable execution of the ingestion workflow over a source scope. | [DM-17](architecture/domain.md#dm-17), [WF-01](architecture/ingestion.md#wf-01) |
+| <a id="gl-18"></a>GL-18 | Ingestion run | One durable, resumable execution of a stage-1 ingest, a reprocess or a stage-2 enrichment workflow over a source scope or a selection. | [DM-17](architecture/domain.md#dm-17), [WF-01](architecture/ingestion.md#wf-01), [WF-03](architecture/ingestion.md#wf-03), [WF-06](architecture/ingestion.md#wf-06) |
 | <a id="gl-19"></a>GL-19 | Review task | A queued human decision about an uncertain or conflicting assignment or enrichment. | [DM-13](architecture/domain.md#dm-13) |
 | <a id="gl-20"></a>GL-20 | Exact / near duplicate | Exact duplicates share a content hash or an e-mail identity hash. Near duplicates have highly similar text. | [DM-04](architecture/domain.md#dm-04) |
+| <a id="gl-21"></a>GL-21 | Stage 1 (deterministic ingestion) | The pipeline part made of the deterministic stages of [ING-21.1](architecture/ingestion.md#ing-21-1) (fetch through index, including near-duplicate detection, rule assignment and reconciliation, and local embedding), making a document searchable with no LLM involved. | [ING-21](architecture/ingestion.md#ing-21), [WF-02](architecture/ingestion.md#wf-02), [ADR-17](architecture/decisions.md#adr-17) |
+| <a id="gl-22"></a>GL-22 | Stage 2 (LLM enrichment) | The decoupled, separately controlled part that runs the local LLM over an already searchable document, reconciles its proposals and updates the document's metadata in the index. | [ING-21](architecture/ingestion.md#ing-21), [WF-06](architecture/ingestion.md#wf-06), [WF-07](architecture/ingestion.md#wf-07), [ADR-17](architecture/decisions.md#adr-17) |
+| <a id="gl-23"></a>GL-23 | Model endpoint | A local OpenAI-compatible inference endpoint serving one role (LLM chat completions or embeddings). It is addressed only by base URL, model name (carrying the weights digest) and parameters from configuration. | [PORT-12](architecture/ports-adapters.md#port-12), [PORT-13](architecture/ports-adapters.md#port-13), [DEP-07](architecture/overview.md#dep-07), [DEP-09](architecture/overview.md#dep-09), [ADR-15](architecture/decisions.md#adr-15) |
 
 ## PoC scope and non-goals
 
@@ -151,10 +154,11 @@ Each term is defined only to the depth needed for shared vocabulary. Structure, 
 ### SCOPE-01 Local single-machine PoC
 
 - <a id="scope-01-1"></a>**SCOPE-01.1** Everything runs on one host under docker compose. The service set is defined in [DEP-01](architecture/overview.md#dep-01).
-- <a id="scope-01-2"></a>**SCOPE-01.2** There are no cloud services, managed databases or Kubernetes. The embedding API is the only external dependency ([SCOPE-04](#scope-04)).
+- <a id="scope-01-2"></a>**SCOPE-01.2** There are no cloud services, managed databases, Kubernetes or external APIs at runtime, and the stack has zero runtime egress ([SCOPE-04.5](#scope-04-5), [DEP-01.9](architecture/overview.md#dep-01-9)). Image and model downloads happen once, at setup ([DEP-10](architecture/overview.md#dep-10)).
 - <a id="scope-01-3"></a>**SCOPE-01.3** The PoC is single-firm and single-tenant.
+- <a id="scope-01-4"></a>**SCOPE-01.4** Inference budget: the LLM, the embedding model and their KV cache run on the PoC host within up to 96 GB of accelerator (or unified) memory. The split is in [DEP-08.8](architecture/overview.md#dep-08-8) and the rationale in [ADR-15](architecture/decisions.md#adr-15).
 
-Refs: [DEP-01](architecture/overview.md#dep-01), [SCOPE-04](#scope-04)
+Refs: [DEP-01](architecture/overview.md#dep-01), [DEP-10](architecture/overview.md#dep-10), [SCOPE-04](#scope-04)
 
 <a id="scope-02"></a>
 ### SCOPE-02 Sample corpus, 100 GB design
@@ -171,7 +175,7 @@ Refs: [SC-07](success-criteria.md#sc-07), [DEP-08](architecture/overview.md#dep-
 - <a id="scope-03-1"></a>**SCOPE-03.1** E-mail: PST archives, EML and MSG files, including attachments and nested messages.
 - <a id="scope-03-2"></a>**SCOPE-03.2** Office: DOCX, XLSX and PPTX, legacy DOC, XLS and PPT, and RTF.
 - <a id="scope-03-3"></a>**SCOPE-03.3** PDF with a text layer, scanned PDF, and scanned images (TIFF, JPEG, PNG).
-- <a id="scope-03-4"></a>**SCOPE-03.4** SharePoint Online document libraries with site and column metadata, read live or from an exported folder.
+- <a id="scope-03-4"></a>**SCOPE-03.4** SharePoint Online document libraries with site and column metadata, read from an exported folder. Live reading over Graph is `later`, because it needs runtime egress ([F-01.4](features.md#f-01-4), [SCOPE-04.7](#scope-04-7)).
 - <a id="scope-03-5"></a>**SCOPE-03.5** Local drive and file-share folders.
 - <a id="scope-03-6"></a>**SCOPE-03.6** Out of scope: audio and video, CAD, Teams chats, live Exchange mailboxes (PST only), and content of encrypted or password-protected files. These items are recorded and quarantined with a reason, never dropped silently.
 
@@ -180,20 +184,23 @@ Refs: [F-01](features.md#f-01), [F-02](features.md#f-02), [F-03](features.md#f-0
 <a id="scope-04"></a>
 ### SCOPE-04 Confidentiality constraint
 
-- <a id="scope-04-1"></a>**SCOPE-04.1** Embeddings are computed by an external API ([ADR-06](architecture/decisions.md#adr-06)), so chunk text and query text leave the machine. The egress controls are in [XC-02](architecture/overview.md#xc-02).
-- <a id="scope-04-2"></a>**SCOPE-04.2** The PoC therefore processes only synthetic, public or anonymised data, or matters whose client has explicitly consented to this processing. Real client data outside that set is not loaded.
-- <a id="scope-04-3"></a>**SCOPE-04.3** Before the first run with any real data, the embedding provider's terms (no training on inputs, retention, processing region) are checked and recorded.
-- <a id="scope-04-4"></a>**SCOPE-04.4** Using the system beyond this data set requires revisiting [ADR-06](architecture/decisions.md#adr-06) (see [ADR-06.5](architecture/decisions.md#adr-06-5)).
+- <a id="scope-04-1"></a>**SCOPE-04.1** **Retired:** embeddings are now local and no text leaves the host. Replaced by [SCOPE-04.5](#scope-04-5).
+- <a id="scope-04-2"></a>**SCOPE-04.2** **Retired:** the sample/consented-only restriction existed because text left the premises. Replaced by [SCOPE-04.6](#scope-04-6).
+- <a id="scope-04-3"></a>**SCOPE-04.3** **Retired:** there is no external embedding provider whose terms need checking. Replaced by [SCOPE-04.5](#scope-04-5).
+- <a id="scope-04-4"></a>**SCOPE-04.4** **Retired:** [ADR-06](architecture/decisions.md#adr-06) is superseded. Replaced by [SCOPE-04.7](#scope-04-7).
+- <a id="scope-04-5"></a>**SCOPE-04.5** All processing on premises: no document, chunk, prompt or query text leaves the host at runtime. Zero egress is enforced by [DEP-01.9](architecture/overview.md#dep-01-9) and [XC-02](architecture/overview.md#xc-02), and gated by [SC-14.6](success-criteria.md#sc-14-6).
+- <a id="scope-04-6"></a>**SCOPE-04.6** Real data under DPIA: the PoC may process real firm data, provided the firm's DPIA (GDPR Art. 35) covering this processing is recorded before the first load. Each source records its data-use reference ([DM-01.5](architecture/domain.md#dm-01-5)). Synthetic, public and anonymised data need only a sample-data declaration.
+- <a id="scope-04-7"></a>**SCOPE-04.7** Egress exceptions: any change that would introduce runtime egress, such as a hosted model or the live SharePoint Graph connector ([F-01.4](features.md#f-01-4)), requires revisiting [ADR-15](architecture/decisions.md#adr-15) and updating the DPIA.
 
-Refs: [ADR-06](architecture/decisions.md#adr-06), [XC-02](architecture/overview.md#xc-02)
+Refs: [ADR-15](architecture/decisions.md#adr-15), [ADR-16](architecture/decisions.md#adr-16), [XC-02](architecture/overview.md#xc-02), [DEP-01](architecture/overview.md#dep-01), [SC-14.6](success-criteria.md#sc-14-6)
 
 <a id="scope-05"></a>
 ### SCOPE-05 Non-goal: answer generation
 
 - <a id="scope-05-1"></a>**SCOPE-05.1** There is no chat, question-answering or answer-synthesis layer. The store returns documents, chunks and metadata.
-- <a id="scope-05-2"></a>**SCOPE-05.2** The local LLM is used only for ingest-time enrichment ([ADR-05](architecture/decisions.md#adr-05)). Agents that reason over results are external MCP clients ([F-18](features.md#f-18)).
+- <a id="scope-05-2"></a>**SCOPE-05.2** The local LLM is used only for stage-2 enrichment ([ADR-17](architecture/decisions.md#adr-17)); the local embedding model is used in stage 1 and at query time ([ADR-16](architecture/decisions.md#adr-16)). Agents that reason over results are external MCP clients ([F-18](features.md#f-18)).
 
-Refs: [ADR-05](architecture/decisions.md#adr-05), [F-18](features.md#f-18)
+Refs: [ADR-15](architecture/decisions.md#adr-15), [ADR-17](architecture/decisions.md#adr-17), [F-18](features.md#f-18)
 
 <a id="scope-06"></a>
 ### SCOPE-06 Non-goal: production hardening

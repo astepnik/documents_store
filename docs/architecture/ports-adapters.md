@@ -15,7 +15,7 @@ Interface sketches are Python 3.12 `typing.Protocol`s, simplified. Domain types 
 | [PORT-05](#port-05) to [PORT-09](#port-09) repositories | outbound | [ADP-08](#adp-08) | in-memory repositories |
 | [PORT-10](#port-10) SearchIndexWriter | outbound | [ADP-09](#adp-09) | `InMemoryIndex` |
 | [PORT-11](#port-11) ReadModel | outbound | [ADP-10](#adp-10) | `InMemoryReadModel` |
-| [PORT-12](#port-12) EmbeddingProvider | outbound | [ADP-11](#adp-11) (default), [ADP-12](#adp-12) | `HashEmbedder` |
+| [PORT-12](#port-12) Embedder | outbound | [ADP-12](#adp-12) | `HashEmbedder` |
 | [PORT-13](#port-13) LlmClient | outbound | [ADP-13](#adp-13) | `ScriptedLlm` |
 | [PORT-14](#port-14) TextExtractor | outbound | [ADP-14](#adp-14), [ADP-15](#adp-15) | `FixtureExtractor` |
 | [PORT-15](#port-15) OcrEngine | outbound | [ADP-16](#adp-16) | `FixtureOcr` |
@@ -34,7 +34,7 @@ Interface sketches are Python 3.12 `typing.Protocol`s, simplified. Domain types 
 These rules apply to every port below, so individual ports do not repeat them.
 
 - <a id="port-20-1"></a>**PORT-20.1 Synchronous.** All ports are synchronous Python calls. DBOS steps, Typer commands and the query path are synchronous in the PoC. Adapters that wrap async libraries (msgraph-sdk, the `mcp` SDK) bridge internally and never leak coroutines through a port.
-- <a id="port-20-2"></a>**PORT-20.2 Typed errors.** Outbound adapters raise only the error types of [XC-05.2](overview.md#xc-05-2) (`TransientError`, `RateLimitedError`, `PermanentError`) plus the application errors of [PORT-01.3](#port-01-3). Library exceptions never cross a port. Unknown exceptions count as transient, as [XC-05.2](overview.md#xc-05-2) states.
+- <a id="port-20-2"></a>**PORT-20.2 Typed errors.** Outbound adapters raise only the error types of [XC-05.2](overview.md#xc-05-2) (`TransientError`, `BackpressureError`, `PermanentError`) plus the application errors of [PORT-01.3](#port-01-3). Library exceptions never cross a port. Unknown exceptions count as transient, as [XC-05.2](overview.md#xc-05-2) states.
 - <a id="port-20-3"></a>**PORT-20.3 No I/O types in signatures.** Port signatures use domain types, IDs, `pathlib.Path`, `bytes` and `BinaryIO`. They never use SQLAlchemy rows, `httpx` responses or DBOS handles, so [ARCH-03](overview.md#arch-03) holds for `docstore.ports`.
 - <a id="port-20-4"></a>**PORT-20.4 Version reporting.** Every adapter that produces derived data reports the version stamp it applied (parser, OCR, model, prompt), as listed in [XC-06.1](overview.md#xc-06-1). The caller stores the stamp; the adapter never decides staleness.
 - <a id="port-20-5"></a>**PORT-20.5 Large payloads go by reference.** Bytes larger than 1 MiB pass as a `Path` in a step-scoped temporary directory, or as a `BlobRef` ([PORT-17](#port-17)), never as an in-memory `bytes` value. Workflow checkpoints therefore never contain content ([ADP-05.4](#adp-05-4)).
@@ -198,7 +198,7 @@ class IngestionRepository(Protocol):
 
 - <a id="port-07-1"></a>**PORT-07.1 Fingerprint-aware upsert.** `upsert_items` inserts new items, updates items whose fingerprint changed (resetting their stage status), and leaves unchanged items untouched. It returns `new`, `changed` and `unchanged` counts for [ING-01](ingestion.md#ing-01).
 - <a id="port-07-2"></a>**PORT-07.2 Counters bypass the aggregate lock.** `add_stage_counts` is an atomic `UPDATE … SET n = n + :d` on the run's counter rows. It does not load or version-check the IngestionRun aggregate, so thousands of concurrent steps do not conflict on it. What is counted is defined by [ING-16](ingestion.md#ing-16).
-- <a id="port-07-3"></a>**PORT-07.3 Reprocessing selection.** `count_selection` returns the number of selected documents and the inputs for the cost estimate of [CMD-25.2](application.md#cmd-25-2); `select_page` returns one keyset page of selected source items for [CMD-28](application.md#cmd-28). Both read on the `docstore_app` connection, return only IDs and counts, and are never exposed to a principal; the selection fields are those of [CMD-25.1](application.md#cmd-25-1).
+- <a id="port-07-3"></a>**PORT-07.3 Reprocessing selection.** `count_selection` returns the number of selected documents and the inputs for the work estimate of [CMD-25.2](application.md#cmd-25-2); `select_page` returns one keyset page of selected source items for [CMD-28](application.md#cmd-28) (SelectRunPage), for both reprocess runs and enrich runs. Both read on the `docstore_app` connection, return only IDs and counts, and are never exposed to a principal; the selection fields are those of [CMD-25.1](application.md#cmd-25-1).
 
 Refs: [DM-01](domain.md#dm-01), [DM-02](domain.md#dm-02), [DM-17](domain.md#dm-17), [ADP-08](#adp-08)
 
@@ -246,13 +246,18 @@ Refs: [DM-14](domain.md#dm-14), [DM-15](domain.md#dm-15), [ADP-08](#adp-08)
 class SearchIndexWriter(Protocol):
     def index_document(self, id: DocumentId, generation: ChunkGeneration, keys: FilterKeys) -> IndexStats: ...
     def refresh_filter_keys(self, id: DocumentId, keys: FilterKeys) -> None: ...
+    def refresh_enrichment_keys(self, id: DocumentId, keys: EnrichmentFilterKeys) -> None: ...
     def remove_document(self, id: DocumentId) -> None: ...
 
 @dataclass(frozen=True)
 class FilterKeys: ...   # one attribute per denormalised filter key of the domain, same names
+
+@dataclass(frozen=True)
+class EnrichmentFilterKeys: ...   # the document-level keys only; no access, client or matter keys
 ```
 
-- <a id="port-10-4"></a>**PORT-10.4 Filter keys.** `FilterKeys` has exactly the fields, names and types of [DM-05.3](domain.md#dm-05-3); the port adds none.
+- <a id="port-10-4"></a>**PORT-10.4 Filter keys.** `FilterKeys` has exactly the fields, names and types of [DM-05.3](domain.md#dm-05-3); the port adds none. `EnrichmentFilterKeys` has exactly the document-level group of [DM-05.3](domain.md#dm-05-3), so access keys, `client_ids` and `matter_ids` cannot be passed to it.
+- <a id="port-10-5"></a>**PORT-10.5 Stage-2 write path.** `refresh_enrichment_keys` writes only the document-level keys and never touches `chunks`. It is the only method the stage-2 metadata mode of [CMD-15.5](application.md#cmd-15-5) calls. The contract suite of this port ([XC-07.3](overview.md#xc-07-3)) asserts, against [ADP-09](#adp-09) and the fake of [ADP-22.2](#adp-22-2), that after it runs, the access keys, `client_ids`, `matter_ids` and every chunk row of the document are byte-identical, which checks [DM-10.8](domain.md#dm-10-8) and [SC-16.2](../success-criteria.md#sc-16-2) structurally.
 
 - <a id="port-10-1"></a>**PORT-10.1 Same transaction.** The writer is reached as `uow.index` ([PORT-04](#port-04)), so filter keys and access keys commit atomically with the assignment or policy change that caused them ([XC-01.2](overview.md#xc-01-2)).
 - <a id="port-10-2"></a>**PORT-10.2 Generation swap.** `index_document` writes keys onto every chunk of the given generation, removes chunks of older generations from the index, and only then sets `status = indexed` and `active_chunk_generation` ([DM-03.10](domain.md#dm-03-10)). A document whose chunks lack vectors for the active model is refused with `PermanentError("not_embedded")`.
@@ -294,8 +299,8 @@ class SearchRequest:
 
 - <a id="port-11-1"></a>**PORT-11.1 Scope is mandatory.** Every method that can return a document, chunk, thread, matter, client or person takes an `AccessScope` positional argument without a default. `AccessScope` holds the predicate inputs of [QRY-16.3](application.md#qry-16-3), built per [XC-01.3](overview.md#xc-01-3). No method exists that reads document-derived rows without it. `run_progress`, `taxonomy` and `audit` return no document content; their handlers restrict them by role ([DM-16.2](domain.md#dm-16-2)).
 - <a id="port-11-2"></a>**PORT-11.2 Absent means invisible or nonexistent.** Methods return `None` or an empty page, and the handler raises `NotFound`. The adapter never distinguishes the two cases ([XC-01.5](overview.md#xc-01-5)).
-- <a id="port-11-3"></a>**PORT-11.3 Query vector from outside.** The read model never calls the embedding API. [QRY-01](application.md#qry-01) obtains `query_vector` from [PORT-12](#port-12) and decides the degraded keyword-only fallback.
-- <a id="port-11-4"></a>**PORT-11.4 Model match.** If `req.model` differs from the model stamped on the indexed chunks, the vector leg returns nothing and the page is marked `degraded=true` rather than comparing vectors from different spaces ([ADR-06.2](decisions.md#adr-06-2)).
+- <a id="port-11-3"></a>**PORT-11.3 Query vector from outside.** The read model never calls the embedding endpoint. [QRY-01](application.md#qry-01) obtains `query_vector` from [PORT-12](#port-12) and decides the degraded keyword-only fallback.
+- <a id="port-11-4"></a>**PORT-11.4 Model match.** If `req.model` differs from the model stamped on the indexed chunks, the vector leg returns nothing and the page is marked `degraded=true` rather than comparing vectors from different spaces ([ADR-16.2](decisions.md#adr-16-2)).
 - <a id="port-11-5"></a>**PORT-11.5 Snippets.** Snippets are taken from the best-matching visible chunk, with match markers `«…»`, within the length limit of [QRY-16.8](application.md#qry-16-8).
 
 Refs: [XC-01](overview.md#xc-01), [ADP-10](#adp-10), [ARCH-04](overview.md#arch-04), [QRY-01](application.md#qry-01)
@@ -305,31 +310,34 @@ Refs: [XC-01](overview.md#xc-01), [ADP-10](#adp-10), [ARCH-04](overview.md#arch-
 ## Outbound ports: AI services
 
 <a id="port-12"></a>
-### PORT-12 EmbeddingProvider
+### PORT-12 Embedder
 
 ```python
-class EmbeddingProvider(Protocol):
+class Embedder(Protocol):
     @property
-    def model(self) -> EmbeddingModelRef: ...       # provider, model_id, dimension
+    def model(self) -> EmbeddingModelRef: ...       # model_id, weights_digest, dimension
     @property
-    def limits(self) -> EmbeddingLimits: ...        # max_texts, max_tokens_per_request, max_tokens_per_text
+    def limits(self) -> EmbeddingLimits: ...        # max_texts, max_tokens_per_request; from configuration
     def embed_documents(self, texts: Sequence[str], token_counts: Sequence[int]) -> EmbeddingBatch: ...
     def embed_query(self, text: str) -> list[float]: ...
+    def status(self) -> ModelEndpointStatus: ...    # read-only; never raises BackpressureError
 
 @dataclass(frozen=True)
 class EmbeddingBatch:
     vectors: list[list[float]]   # same order and length as texts
     model: EmbeddingModelRef
-    tokens_billed: int
+    tokens: int
 ```
 
-- <a id="port-12-1"></a>**PORT-12.1 Document and query roles.** Documents and queries are separate calls so that providers with asymmetric input types (Voyage `input_type`) get the right one. Providers without input types treat both the same.
-- <a id="port-12-2"></a>**PORT-12.2 Batch limits are the caller's job.** [CMD-14](application.md#cmd-14) packs batches within `limits`, using the token counts that the chunker stored ([DM-05](domain.md#dm-05)). A batch over the limits raises `PermanentError("batch_too_large")`. The adapter never truncates text silently.
-- <a id="port-12-3"></a>**PORT-12.3 Rate-limit signal.** HTTP 429 and quota errors raise `RateLimitedError(retry_after_s)`, taking the value from `Retry-After` when the provider sends it. The workflow queue limiter ([WF-04](ingestion.md#wf-04)) is the primary throttle, and this signal is the feedback path.
-- <a id="port-12-4"></a>**PORT-12.4 Dimension check.** The adapter verifies that every returned vector has `model.dimension` entries and raises `PermanentError("dimension_mismatch")` otherwise. Startup also checks the configured dimension against the column ([XC-04.4](overview.md#xc-04-4)).
-- <a id="port-12-5"></a>**PORT-12.5 Production swap.** A local Text Embeddings Inference (bge-m3) adapter can replace the external API behind this port ([ADR-06.4](decisions.md#adr-06-4)). It is reachable through [ADP-12](#adp-12) without new code, because TEI serves an OpenAI-compatible `/v1/embeddings`.
+- <a id="port-12-1"></a>**PORT-12.1 Document and query roles.** Documents and queries are separate calls so that models with asymmetric encoding get a query-side instruction (Qwen3-Embedding: `embedding.QUERY_INSTRUCTION`, [ADP-12.1](#adp-12-1)). Models without one (BGE-M3) treat both the same.
+- <a id="port-12-2"></a>**PORT-12.2 Batch limits are the caller's job.** [CMD-14](application.md#cmd-14) packs batches within `limits`, using the token counts that the chunker stored ([DM-05](domain.md#dm-05)). A batch over the limits raises `PermanentError("batch_too_large")`. The adapter never truncates text silently, and the endpoint is never relied on to do so.
+- <a id="port-12-3"></a>**PORT-12.3 Back-pressure signal.** A saturated, warming or restarting endpoint raises `BackpressureError(retry_after_s)`, taking the value from `Retry-After` when the endpoint sends it. The `embed` queue cap ([WF-04.8](ingestion.md#wf-04-8)) is the primary throttle, and this signal is the feedback path.
+- <a id="port-12-4"></a>**PORT-12.4 Dimension check.** The adapter verifies that every vector it returns has `model.dimension` entries, after the truncation of [ADP-12.3](#adp-12-3), and raises `PermanentError("dimension_mismatch")` otherwise. Startup also checks the configured dimension against the column ([XC-04.4](overview.md#xc-04-4)).
+- <a id="port-12-5"></a>**PORT-12.5 Production swap.** **Retired:** a local embedding model is now the default rather than a production swap. Replaced by [PORT-12.6](#port-12-6).
+- <a id="port-12-6"></a>**PORT-12.6 Endpoint-only binding.** The port's real adapter is [ADP-12](#adp-12), against any OpenAI-compatible `/v1/embeddings` endpoint: vLLM by default ([DEP-09](overview.md#dep-09)), or llama.cpp or Ollama by configuration.
+- <a id="port-12-7"></a>**PORT-12.7 Status.** `status()` returns a `ModelEndpointStatus`: served model name and the digest it carries, readiness, the last warm-up result, the `/metrics` gauges of [XC-03.7](overview.md#xc-03-7), and whether the served name matches `models.lock` ([DEP-10.1](overview.md#dep-10-1)). It is read by [QRY-17](application.md#qry-17) only and changes no state. Changing the runtime or the model is configuration only ([XC-04](overview.md#xc-04)). Changing the model weights requires a re-embed ([ING-17.5](ingestion.md#ing-17-5)).
 
-Refs: [ADP-11](#adp-11), [ADP-12](#adp-12), [ADR-06](decisions.md#adr-06)
+Refs: [ADP-12](#adp-12), [DEP-09](overview.md#dep-09), [ADR-16](decisions.md#adr-16)
 
 <a id="port-13"></a>
 ### PORT-13 LlmClient
@@ -337,6 +345,7 @@ Refs: [ADP-11](#adp-11), [ADP-12](#adp-12), [ADR-06](decisions.md#adr-06)
 ```python
 class LlmClient(Protocol):
     def complete_structured(self, req: StructuredRequest) -> StructuredResponse: ...
+    def status(self) -> ModelEndpointStatus: ...    # as PORT-12.7
 
 @dataclass(frozen=True)
 class StructuredRequest:
@@ -346,14 +355,14 @@ class StructuredRequest:
     json_schema: Mapping[str, Any]
     max_output_tokens: int
     temperature: float = 0.0
-    seed: int | None = 0
+    seed: int | None = None      # set from LLM-01.4
 
 @dataclass(frozen=True)
 class StructuredResponse:
     data: Mapping[str, Any]      # parsed and schema-valid
     raw_text: str
-    model_id: str                # as served, e.g. "qwen3:14b-instruct-q4_K_M"
-    model_digest: str | None     # runtime model digest, for provenance
+    model_id: str                # as served, e.g. "gpt-oss-120b@sha256:…"
+    model_digest: str | None     # weights digest from the served name (LLM-01.3), for provenance
     prompt_tokens: int
     completion_tokens: int
     latency_ms: int
@@ -362,9 +371,11 @@ class StructuredResponse:
 
 - <a id="port-13-1"></a>**PORT-13.1 Validated output.** The adapter parses `raw_text` as JSON and validates it against `json_schema` (`jsonschema`, Draft 2020-12). Invalid JSON, a schema violation or `finish_reason == "length"` raises `InvalidLlmOutput(raw_text, errors)`, a `PermanentError` subtype that [LLM-05](ingestion.md#llm-05) uses for its repair retry.
 - <a id="port-13-2"></a>**PORT-13.2 No tools, no streaming.** The port has no tool-calling or streaming surface, which keeps the safeguards of [LLM-06](ingestion.md#llm-06) structural.
-- <a id="port-13-3"></a>**PORT-13.3 Provenance fields.** `model_id`, `model_digest` and the request parameters are what [LLM-04](ingestion.md#llm-04) stamps. The adapter reports them; it does not build provenance.
+- <a id="port-13-3"></a>**PORT-13.3 Provenance fields.** `model_id`, `model_digest` and the request parameters are what [LLM-04](ingestion.md#llm-04) stamps. `model_digest` is the weights digest carried in the served model name ([LLM-01.3](ingestion.md#llm-01-3)). The reported request parameters include the merged `llm.EXTRA_BODY` (for example `reasoning_effort`, [ADP-13.1](#adp-13-1)), so they are part of the stamped `params`. The adapter reports them; it does not build provenance.
+- <a id="port-13-4"></a>**PORT-13.4 Status.** `status()` has the contract of [PORT-12.7](#port-12-7) for the `llm` role.
+- <a id="port-13-5"></a>**PORT-13.5 Seed.** `seed` defaults to `None` in the DTO; the enrichment step sets it from the request parameters of [LLM-01.4](ingestion.md#llm-01-4).
 
-Refs: [ADP-13](#adp-13), [LLM-01](ingestion.md#llm-01), [ADR-05](decisions.md#adr-05)
+Refs: [ADP-13](#adp-13), [LLM-01](ingestion.md#llm-01), [ADR-15](decisions.md#adr-15)
 
 ---
 
@@ -497,8 +508,8 @@ class WorkflowStatus:
     error: str | None
 ```
 
-- <a id="port-18-1"></a>**PORT-18.1 Deterministic IDs.** `start` with an existing `workflow_id` returns the existing workflow's status and starts nothing. The ID formats are defined in [WF-01](ingestion.md#wf-01) and [WF-02](ingestion.md#wf-02).
-- <a id="port-18-2"></a>**PORT-18.2 Names, not callables.** Workflows are addressed by registered name (`ingestion_run`, `document_pipeline`, `reprocessing`), so the application never imports workflow code, as [ARCH-08](overview.md#arch-08) requires.
+- <a id="port-18-1"></a>**PORT-18.1 Deterministic IDs.** `start` with an existing `workflow_id` returns the existing workflow's status and starts nothing. The ID formats are defined in [WF-01](ingestion.md#wf-01), [WF-02](ingestion.md#wf-02), [WF-06](ingestion.md#wf-06) and [WF-07](ingestion.md#wf-07).
+- <a id="port-18-2"></a>**PORT-18.2 Names, not callables.** Workflows are addressed by registered name (`ingestion_run`, `document_pipeline`, `reprocessing_run`, `enrichment_run`, `document_enrichment`), so the application never imports workflow code, as [ARCH-08](overview.md#arch-08) requires.
 - <a id="port-18-3"></a>**PORT-18.3 Control semantics.** What pause and resume mean for a run is defined in [WF-05](ingestion.md#wf-05). The port offers only the engine primitives cancel and resume.
 
 Refs: [ADP-06](#adp-06), [ARCH-08](overview.md#arch-08), [ADR-04](decisions.md#adr-04)
@@ -529,7 +540,7 @@ Refs: [ADP-21](#adp-21), [ARCH-05](overview.md#arch-05), [ADR-13](decisions.md#a
 FastAPI app at `/api/v1` in the api service ([DEP-03](overview.md#dep-03)), module [MOD-05.1](overview.md#mod-05-1). Request and response bodies are the command DTOs and read DTOs ([PORT-02.2](#port-02-2)).
 
 - <a id="adp-01-1"></a>**ADP-01.1 Auth dependency.** A FastAPI dependency reads `Authorization: Bearer`, calls [PORT-03](#port-03) with channel `http` and builds the `ExecutionContext` ([PORT-01.2](#port-01-2)). Every route depends on it except `/healthz` and `/readyz`.
-- <a id="adp-01-2"></a>**ADP-01.2 Error mapping.** `AuthenticationError` → 401 with `WWW-Authenticate: Bearer`. `Forbidden` → 403. `NotFound` → 404 with the same body for invisible and nonexistent items. `ValidationFailed` → 422. `Conflict` and `InvariantViolation` → 409. `ExternalRateLimited` → 429 with `Retry-After`. `ExternalTransient` and `ExternalPermanent` → 503. Anything else → 500 with `request_id` only, never a stack trace or SQL.
+- <a id="adp-01-2"></a>**ADP-01.2 Error mapping.** `AuthenticationError` → 401 with `WWW-Authenticate: Bearer`. `Forbidden` → 403. `NotFound` → 404 with the same body for invisible and nonexistent items. `ValidationFailed` → 422. `Conflict` and `InvariantViolation` → 409. `ExternalRateLimited` → 429 with `Retry-After`. `ExternalBackpressure` → 503 with `Retry-After`. `ExternalTransient` and `ExternalPermanent` → 503. Anything else → 500 with `request_id` only, never a stack trace or SQL.
 - <a id="adp-01-3"></a>**ADP-01.3 Request ID.** Middleware accepts `X-Request-ID` or generates a UUIDv7, binds it to the log context ([XC-03.2](overview.md#xc-03-2)) and echoes it in the response.
 
 Route map (writes are `POST`, `PUT` or `PATCH`; pipeline commands are not routed, per [PORT-01.4](#port-01-4)):
@@ -537,7 +548,7 @@ Route map (writes are `POST`, `PUT` or `PATCH`; pipeline commands are not routed
 | ID | Routes | Maps to |
 |---|---|---|
 | <a id="adp-01-4"></a>ADP-01.4 | `POST /sources` | [CMD-01](application.md#cmd-01) |
-| <a id="adp-01-5"></a>ADP-01.5 | `POST /runs`; `POST /runs/{id}/pause`, `/resume`, `/cancel` | [CMD-02](application.md#cmd-02), [CMD-03](application.md#cmd-03) |
+| <a id="adp-01-5"></a>ADP-01.5 | `POST /runs`; `POST /runs/{id}/pause`, `/resume`, `/cancel`, `/throttle` | [CMD-02](application.md#cmd-02), [CMD-03](application.md#cmd-03) |
 | <a id="adp-01-6"></a>ADP-01.6 | `GET /runs/{id}`; `GET /runs/{id}/failures` | [QRY-10](application.md#qry-10), [QRY-11](application.md#qry-11) |
 | <a id="adp-01-7"></a>ADP-01.7 | `POST /reprocessing` | [CMD-25](application.md#cmd-25) |
 | <a id="adp-01-8"></a>ADP-01.8 | `POST /search`; `POST /search/facets` | [QRY-01](application.md#qry-01), [QRY-08](application.md#qry-08) |
@@ -549,6 +560,7 @@ Route map (writes are `POST`, `PUT` or `PATCH`; pipeline commands are not routed
 | <a id="adp-01-14"></a>ADP-01.14 | `POST /imports/reference-data`; `POST /imports/access-policies` (multipart CSV) | [CMD-21](application.md#cmd-21), [CMD-22](application.md#cmd-22) |
 | <a id="adp-01-15"></a>ADP-01.15 | `GET /taxonomy`; `PUT /taxonomy/{kind}/terms/{code}`; `POST /rulesets` | [QRY-12](application.md#qry-12), [CMD-23](application.md#cmd-23), [CMD-24](application.md#cmd-24) |
 | <a id="adp-01-16"></a>ADP-01.16 | `GET /audit` | [QRY-14](application.md#qry-14) |
+| <a id="adp-01-17"></a>ADP-01.17 | `GET /models/status` | [QRY-17](application.md#qry-17) |
 
 Refs: [PORT-01](#port-01), [PORT-02](#port-02), [PORT-03](#port-03), [DEP-03](overview.md#dep-03), [ADR-02](decisions.md#adr-02)
 
@@ -564,7 +576,7 @@ Server-rendered pages served by the api process under `/` ([DEP-03](overview.md#
 | <a id="adp-02-3"></a>ADP-02.3 | `/threads/{id}` | [QRY-04](application.md#qry-04) |
 | <a id="adp-02-4"></a>ADP-02.4 | `/matters`, `/matters/{id}` | [QRY-06](application.md#qry-06), [QRY-07](application.md#qry-07) |
 | <a id="adp-02-5"></a>ADP-02.5 | `/review`: queue with candidate comparison and one-click resolve | [QRY-09](application.md#qry-09), [CMD-19](application.md#cmd-19) |
-| <a id="adp-02-6"></a>ADP-02.6 | `/runs`, `/runs/{id}`: progress partial polled by HTMX ([XC-03.4](overview.md#xc-03-4)), failure list, pause, resume and cancel buttons | [QRY-10](application.md#qry-10), [QRY-11](application.md#qry-11), [CMD-03](application.md#cmd-03) |
+| <a id="adp-02-6"></a>ADP-02.6 | `/runs`, `/runs/{id}`: progress partial polled by HTMX ([XC-03.4](overview.md#xc-03-4)), failure list, stage-2 backlog and lag of the companion enrich run, pause, resume, cancel and throttle controls | [QRY-10](application.md#qry-10), [QRY-11](application.md#qry-11), [CMD-03](application.md#cmd-03) |
 
 - <a id="adp-02-7"></a>**ADP-02.7 PoC login.** `/login` accepts a bearer token, validates it through [PORT-03](#port-03) (channel `ui`) and sets a signed, `HttpOnly`, `SameSite=Strict` session cookie that holds the principal ID and expires after 8 hours. There is no password store.
 - <a id="adp-02-8"></a>**ADP-02.8 CSRF and escaping.** State-changing HTMX requests carry a per-session CSRF token header. Jinja2 autoescape is on, and extracted text and review comments are rendered as escaped text only, because document content is untrusted.
@@ -577,7 +589,7 @@ Refs: [PORT-01](#port-01), [PORT-02](#port-02), [DEP-03](overview.md#dep-03), [A
 `docstore` console script, module [MOD-05.3](overview.md#mod-05-3), run on the host via `uv run docstore` or in compose as the `cli` service ([DEP-01.7](overview.md#dep-01-7)). The command groups are listed in [MOD-05.3](overview.md#mod-05-3).
 
 - <a id="adp-03-1"></a>**ADP-03.1 Principal.** The CLI authenticates with `DOCSTORE_CLI_TOKEN` through [PORT-03](#port-03) (channel `cli`). There is no bypass for local use; administrative commands need the `admin` role ([CMD-26.2](application.md#cmd-26-2)).
-- <a id="adp-03-2"></a>**ADP-03.2 Key mappings.** `source add` → [CMD-01](application.md#cmd-01); `run start|pause|resume|cancel` → [CMD-02](application.md#cmd-02), [CMD-03](application.md#cmd-03); `run watch|failures` → [QRY-10](application.md#qry-10), [QRY-11](application.md#qry-11); `import refdata|acl` → [CMD-21](application.md#cmd-21), [CMD-22](application.md#cmd-22); `taxonomy upsert|show` → [CMD-23](application.md#cmd-23), [QRY-12](application.md#qry-12); `rules publish` → [CMD-24](application.md#cmd-24); `review list|resolve` → [QRY-09](application.md#qry-09), [CMD-19](application.md#cmd-19); `reprocess` → [CMD-25](application.md#cmd-25); `eval` runs the harness of [F-20](../features.md#f-20). Tokens are issued outside the CLI ([ADP-07.3](#adp-07-3)).
+- <a id="adp-03-2"></a>**ADP-03.2 Key mappings.** `source add` → [CMD-01](application.md#cmd-01); `run start|pause|resume|cancel` → [CMD-02](application.md#cmd-02), [CMD-03](application.md#cmd-03); `enrich pause|resume|throttle|rerun` → [CMD-03](application.md#cmd-03), [CMD-25](application.md#cmd-25); `models status` → [QRY-17](application.md#qry-17); `models verify` is not a CLI command but the host-side operator script `deploy/models/verify.sh`, which runs the one-shot `model-verify` job of [DEP-10.3](overview.md#dep-10-3); it is outside the hexagon and calls no handler; `run watch|failures` → [QRY-10](application.md#qry-10), [QRY-11](application.md#qry-11); `import refdata|acl` → [CMD-21](application.md#cmd-21), [CMD-22](application.md#cmd-22); `taxonomy upsert|show` → [CMD-23](application.md#cmd-23), [QRY-12](application.md#qry-12); `rules publish` → [CMD-24](application.md#cmd-24); `review list|resolve` → [QRY-09](application.md#qry-09), [CMD-19](application.md#cmd-19); `reprocess` → [CMD-25](application.md#cmd-25); `eval` runs the harness of [F-20](../features.md#f-20). Tokens are issued outside the CLI ([ADP-07.3](#adp-07-3)).
 - <a id="adp-03-3"></a>**ADP-03.3 Exit codes.** 0 success; 2 `ValidationFailed`; 3 `NotFound`; 4 `AuthenticationError` or `Forbidden`; 5 `Conflict` or `InvariantViolation`; 6 `External*`; 1 anything else. `--json` prints the DTO for scripting.
 - <a id="adp-03-4"></a>**ADP-03.4 Starting runs.** `run start` executes [CMD-02](application.md#cmd-02) in the CLI process. The workflow is enqueued through [ADP-06](#adp-06) and executed by the worker service, so the CLI may exit immediately or follow with `--watch`.
 
@@ -599,15 +611,15 @@ Refs: [PORT-01](#port-01), [PORT-02](#port-02), [PORT-03](#port-03), [MCP-01](mc
 <a id="adp-05"></a>
 ### ADP-05 DBOS ingestion worker
 
-Hosts the DBOS workflows and queues in the worker service ([DEP-05](overview.md#dep-05)), module [MOD-05.5](overview.md#mod-05-5). The workflow definitions are [WF-01](ingestion.md#wf-01) to [WF-03](ingestion.md#wf-03), and the queue topology is [WF-04](ingestion.md#wf-04).
+Hosts the DBOS workflows and queues in the worker service ([DEP-05](overview.md#dep-05)), module [MOD-05.5](overview.md#mod-05-5). The workflow definitions are [WF-01](ingestion.md#wf-01) to [WF-03](ingestion.md#wf-03), [WF-06](ingestion.md#wf-06) and [WF-07](ingestion.md#wf-07), and the queue topology is [WF-04](ingestion.md#wf-04).
 
 - <a id="adp-05-1"></a>**ADP-05.1 Launch.** `bootstrap.worker` builds the container ([ARCH-07](overview.md#arch-07)), configures `DBOS(config={"name": "docstore", "system_database_url": settings.db.DBOS_URL, "executor_id": settings.worker.EXECUTOR_ID})`, imports the workflow modules so that decorators register, declares the queues, and calls `DBOS.launch()`. Launch recovers pending workflows of this executor ([WF-05](ingestion.md#wf-05)).
 - <a id="adp-05-2"></a>**ADP-05.2 One step, one command.** Each `@DBOS.step()` function executes exactly one command through [PORT-01](#port-01) and returns its result. The `ExecutionContext` carries the configured `service` principal with role `worker` ([DM-16.2](domain.md#dm-16-2)), the run ID, and `DBOS.workflow_id`. Workflow functions only sequence steps, branch on step results, enqueue children and sleep. They hold no business rules ([ARCH-08](overview.md#arch-08)).
 - <a id="adp-05-3"></a>**ADP-05.3 Determinism.** Workflow functions contain no I/O, clock reads or randomness outside steps. The current time is read inside a step, so it is checkpointed, and waits use durable `DBOS.sleep`, so that replay after a crash takes the same path.
 - <a id="adp-05-4"></a>**ADP-05.4 Small checkpoints.** Step return values are only IDs, hashes, counts and status codes. Text, vectors and file bytes never enter the DBOS system database, which keeps it small at 100 GB scale ([PORT-20.5](#port-20-5)).
-- <a id="adp-05-5"></a>**ADP-05.5 Error translation.** The adapter maps the error classes of [XC-05.1](overview.md#xc-05-1) onto DBOS step retry settings for `transient`, durable sleeps for `rate_limited`, and an immediate call to [CMD-16](application.md#cmd-16) for `permanent` and `poison`. What happens to the item then is [ING-15](ingestion.md#ing-15).
+- <a id="adp-05-5"></a>**ADP-05.5 Error translation.** The adapter maps the error classes of [XC-05.1](overview.md#xc-05-1) onto DBOS step retry settings for `transient`, durable sleeps for `backpressure`, and an immediate call to [CMD-16](application.md#cmd-16) for `permanent` and `poison`. What happens to the item then is [ING-15](ingestion.md#ing-15).
 
-Refs: [PORT-01](#port-01), [WF-01](ingestion.md#wf-01), [WF-02](ingestion.md#wf-02), [WF-03](ingestion.md#wf-03), [WF-04](ingestion.md#wf-04), [DEP-05](overview.md#dep-05), [ADR-04](decisions.md#adr-04)
+Refs: [PORT-01](#port-01), [WF-01](ingestion.md#wf-01), [WF-02](ingestion.md#wf-02), [WF-03](ingestion.md#wf-03), [WF-04](ingestion.md#wf-04), [WF-06](ingestion.md#wf-06), [WF-07](ingestion.md#wf-07), [DEP-05](overview.md#dep-05), [ADR-04](decisions.md#adr-04)
 
 ---
 
@@ -662,9 +674,10 @@ Refs: [PORT-04](#port-04), [PORT-05](#port-05), [PORT-06](#port-06), [PORT-07](#
 Implements [PORT-10](#port-10), module [MOD-06.2](overview.md#mod-06-2). It runs on the unit-of-work connection.
 
 - <a id="adp-09-1"></a>**ADP-09.1 Indexes are declarative.** The BM25 index (`USING bm25 (id, text, …) WITH (key_field='id')`) and the HNSW index on `chunks.embedding` are created by migrations ([MOD-08](overview.md#mod-08)) with the parameters of [ADR-12.2](decisions.md#adr-12-2). Postgres maintains them transactionally on row change, so the writer issues no index-specific calls.
-- <a id="adp-09-2"></a>**ADP-09.2 What the writer does.** `index_document` runs one `UPDATE chunks SET <filter keys of [DM-05.3](domain.md#dm-05-3)> = … WHERE document_id = :id AND generation = :g`, deletes the chunks of other generations of the document, and sets `status = indexed` and `active_chunk_generation` ([DM-03.10](domain.md#dm-03-10)). `refresh_filter_keys` runs the same update without the generation swap.
+- <a id="adp-09-2"></a>**ADP-09.2 What the writer does.** `index_document` runs one `UPDATE chunks SET <chunk-level keys of [DM-05.3](domain.md#dm-05-3)> = … WHERE document_id = :id AND generation = :g`, upserts the document-level keys ([ADP-09.5](#adp-09-5)), deletes the chunks of other generations of the document, and sets `status = indexed` and `active_chunk_generation` ([DM-03.10](domain.md#dm-03-10)). `refresh_filter_keys` runs the same writes without the generation swap; it serves the access refresh of [CMD-12](application.md#cmd-12). `refresh_enrichment_keys` runs only the upsert of [ADP-09.5](#adp-09-5); it serves the stage-2 metadata mode of [CMD-15.5](application.md#cmd-15-5), which writes no chunks or vectors ([ING-20](ingestion.md#ing-20)).
 - <a id="adp-09-3"></a>**ADP-09.3 Keyword backend switch.** With `DOCSTORE_SEARCH__KEYWORD_BACKEND=tsvector` ([ADR-03.2](decisions.md#adr-03-2) fallback), the BM25 index is replaced by a generated `tsv tsvector` column with a GIN index, and the read model switches its keyword leg. The writer is unchanged.
 - <a id="adp-09-4"></a>**ADP-09.4 Bulk-load mode.** For an initial bulk load, [ADR-12.3](decisions.md#adr-12-3) builds HNSW after loading. The operator drops the HNSW index before a first full run and recreates it afterwards with `CREATE INDEX CONCURRENTLY` (script `deploy/sql/hnsw-rebuild.sql`), with `maintenance_work_mem` raised per [DEP-02.4](overview.md#dep-02-4). Search runs keyword-only, flagged `degraded`, while the index is absent.
+- <a id="adp-09-5"></a>**ADP-09.5 Document-level key table.** `document_enrichment_keys` has one row per document, keyed by `document_id`, with the document-level keys of [DM-05.3](domain.md#dm-05-3) and a B-tree or GIN index per filterable column. Writes are `INSERT … ON CONFLICT (document_id) DO UPDATE`. The table is not part of the HNSW or BM25 index, so a stage-2 write is one narrow row per document: no `chunks` tuple, no HNSW graph insert and no BM25 entry. The hybrid statement of [ADP-10.1](#adp-10-1) joins it inside each leg when a document-level filter is present ([ADR-17.2](decisions.md#adr-17-2)).
 
 Refs: [PORT-10](#port-10), [ADR-03](decisions.md#adr-03), [ADR-12](decisions.md#adr-12)
 
@@ -698,7 +711,7 @@ Implements [PORT-11](#port-11), module [MOD-06.2](overview.md#mod-06-2). It conn
   FROM fused GROUP BY document_id ORDER BY score DESC LIMIT :limit OFFSET :offset;
   ```
 
-  The permission predicate of [XC-01.3](overview.md#xc-01-3) is inside each leg, before `ORDER BY … LIMIT`, so ranking, fusion and depth only ever see visible chunks. `:depth` and `:k` are the `candidates_per_leg` and `rrf_k` inputs of [QRY-01.1](application.md#qry-01-1). The duplicate exclusion and optional near-duplicate collapse of [QRY-01.3](application.md#qry-01-3) are extra predicates in the final `SELECT`. Snippets come from `paradedb.snippet` on the best chunk, or `ts_headline` in tsvector mode.
+  `<metadata filters>` on document-level keys ([DM-05.3](domain.md#dm-05-3)) are an `EXISTS` join to `document_enrichment_keys` on `document_id` ([ADP-09.5](#adp-09-5)); chunk-level keys are filtered on the chunk row. The permission predicate of [XC-01.3](overview.md#xc-01-3) is inside each leg, before `ORDER BY … LIMIT`, so ranking, fusion and depth only ever see visible chunks. `:depth` and `:k` are the `candidates_per_leg` and `rrf_k` inputs of [QRY-01.1](application.md#qry-01-1). The duplicate exclusion and optional near-duplicate collapse of [QRY-01.3](application.md#qry-01-3) are extra predicates in the final `SELECT`. Snippets come from `paradedb.snippet` on the best chunk, or `ts_headline` in tsvector mode.
 - <a id="adp-10-2"></a>**ADP-10.2 Vector leg settings.** Each search transaction runs `SET LOCAL hnsw.ef_search` and `SET LOCAL hnsw.iterative_scan = relaxed_order`, so selective permission filters do not under-fill the top-k ([XC-01.4](overview.md#xc-01-4)). Values are tuned per [ADR-12.2](decisions.md#adr-12-2).
 - <a id="adp-10-3"></a>**ADP-10.3 Modes.** `keyword` and `vector` modes execute only their leg and rank by it. A degraded hybrid search (no query vector, [PORT-11.4](#port-11-4)) runs the keyword leg and sets `degraded=true`.
 - <a id="adp-10-4"></a>**ADP-10.4 Facets and totals.** Computed over the matched, visible document set with the same `acl` CTE and filters: `COUNT(DISTINCT document_id)` grouped per facet field. `total_estimate` counts at most 10,001 documents, so totals above 10,000 are reported as `10000+`.
@@ -711,39 +724,47 @@ Refs: [PORT-11](#port-11), [XC-01](overview.md#xc-01), [ADR-03](decisions.md#adr
 <a id="adp-11"></a>
 ### ADP-11 Voyage embedding client
 
-Default [PORT-12](#port-12) implementation, module [MOD-06.3](overview.md#mod-06-3).
+**Retired:** there is no external embedding provider; the local endpoint client is the default. Replaced by [ADP-12](#adp-12).
 
-- <a id="adp-11-1"></a>**ADP-11.1 Call.** `httpx` `POST https://api.voyageai.com/v1/embeddings` through the egress proxy ([DEP-01.4](overview.md#dep-01-4)) with `{"model": "voyage-3.5", "input": [...], "input_type": "document" | "query", "output_dimension": 1024, "output_dtype": "float", "truncation": false}`. With `truncation: false`, over-long inputs fail loudly instead of being cut ([PORT-12.2](#port-12-2)).
-- <a id="adp-11-2"></a>**ADP-11.2 Limits.** `limits` come from settings (provider-documented per-request input count and token caps), not from constants in code, so a tier change needs no release.
-- <a id="adp-11-3"></a>**ADP-11.3 Local token bucket.** A process-local token bucket on requests per minute and tokens per minute (`ratelimit.py`) is a second guard behind the queue limiter of [WF-04](ingestion.md#wf-04). It also throttles the query path in api and mcp, which does not run through DBOS queues. Each process type gets its own slice of the provider quota from settings, so the sum stays within the account tier.
-- <a id="adp-11-4"></a>**ADP-11.4 Status mapping.** 429 → `RateLimitedError(Retry-After)`. 5xx, connect and read timeouts (30 s) → `TransientError`. 400 and 413 → `PermanentError("embedding_rejected")`. 401 and 403 → `PermanentError("embedding_auth")`, which also fails readiness.
-- <a id="adp-11-5"></a>**ADP-11.5 Query path.** `embed_query` has a 2 s deadline and one retry, so [QRY-01](application.md#qry-01) can fall back in time. A per-process LRU cache (1,024 entries, keyed by model and normalised text) avoids re-sending repeated queries.
-- <a id="adp-11-6"></a>**ADP-11.6 Model reference.** The `embedding_model` stamp of [XC-06.1](overview.md#xc-06-1) for the configured model, stamped on chunks by [CMD-14](application.md#cmd-14). `voyage-law-2` is selected by setting `DOCSTORE_EMBEDDING__MODEL` ([ADR-06.2](decisions.md#adr-06-2)).
-- <a id="adp-11-7"></a>**ADP-11.7 Logging.** The per-call metrics of [XC-03.3](overview.md#xc-03-3) are logged, never request text ([XC-02.7](overview.md#xc-02-7)).
+- <a id="adp-11-1"></a>**ADP-11.1 Call.** **Retired:** replaced by [ADP-12.1](#adp-12-1).
+- <a id="adp-11-2"></a>**ADP-11.2 Limits.** **Retired:** batch limits are now configured endpoint limits. Replaced by [ADP-12.1](#adp-12-1).
+- <a id="adp-11-3"></a>**ADP-11.3 Local token bucket.** **Retired:** there is no provider quota to share. Replaced by [ADP-12.5](#adp-12-5).
+- <a id="adp-11-4"></a>**ADP-11.4 Status mapping.** **Retired:** replaced by [ADP-12.4](#adp-12-4).
+- <a id="adp-11-5"></a>**ADP-11.5 Query path.** **Retired:** replaced by [ADP-12.6](#adp-12-6).
+- <a id="adp-11-6"></a>**ADP-11.6 Model reference.** **Retired:** replaced by [ADP-12.8](#adp-12-8).
+- <a id="adp-11-7"></a>**ADP-11.7 Logging.** **Retired:** replaced by [ADP-12.8](#adp-12-8).
 
-Refs: [PORT-12](#port-12), [ADR-06](decisions.md#adr-06), [WF-04](ingestion.md#wf-04)
+Refs: [ADP-12](#adp-12), [ADR-06](decisions.md#adr-06), [ADR-16](decisions.md#adr-16)
 
 <a id="adp-12"></a>
-### ADP-12 OpenAI-compatible embedding client
+### ADP-12 Local embedding client (OpenAI-compatible)
 
-Alternative [PORT-12](#port-12) implementation, sharing `ratelimit.py` and the status mapping of [ADP-11.4](#adp-11-4).
+Default [PORT-12](#port-12) implementation, module [MOD-06.3](overview.md#mod-06-3). It talks to the local `embed` endpoint ([DEP-09](overview.md#dep-09)) and depends only on base URL, model name and parameters from configuration ([XC-04](overview.md#xc-04)).
 
-- <a id="adp-12-1"></a>**ADP-12.1 Call.** `POST {DOCSTORE_EMBEDDING__BASE_URL}/embeddings` with `{"model": ..., "input": [...], "dimensions": 1024, "encoding_format": "float"}`. The default target is OpenAI `text-embedding-3-large` with `dimensions=1024` ([ADR-06.2](decisions.md#adr-06-2)). There is no input-type distinction ([PORT-12.1](#port-12-1)).
-- <a id="adp-12-2"></a>**ADP-12.2 Other endpoints.** Any server with the same API works, including a local Text Embeddings Inference container ([PORT-12.5](#port-12-5)). Switching hosts changes the egress allowlist ([DEP-01.4](overview.md#dep-01-4)) and requires a full re-embed ([ADR-12.3](decisions.md#adr-12-3)).
+- <a id="adp-12-1"></a>**ADP-12.1 Call.** `httpx` `POST {embedding.BASE_URL}/embeddings` (default `http://embed:8000/v1`, internal only, [DEP-09](overview.md#dep-09)) with `{"model": embedding.MODEL, "input": [...], "encoding_format": "float"}`. Queries are prefixed with `embedding.QUERY_INSTRUCTION`; documents are sent unprefixed ([PORT-12.1](#port-12-1)). The batch `limits` are `embedding.MAX_BATCH_TEXTS` (64) and `embedding.MAX_BATCH_TOKENS` (32,768) from settings, not constants in code. The read timeout is `embedding.TIMEOUT_S`.
+- <a id="adp-12-2"></a>**ADP-12.2 Other endpoints.** llama.cpp server with `--embedding` and Ollama serve the same path and are selected by configuration ([DEP-09.4](overview.md#dep-09-4)). A runtime change with identical weight files keeps the `embedding_model` stamp but must pass the probe check of [ADP-12.7](#adp-12-7). Different weights mean a new stamp and a full re-embed ([ADR-12.3](decisions.md#adr-12-3), [ING-17.5](ingestion.md#ing-17-5)).
+- <a id="adp-12-3"></a>**ADP-12.3 Matryoshka truncation.** The adapter takes the first `embedding.DIMENSION` (1024) components of each returned vector and L2-normalises them, so the `halfvec(1024)` schema stays ([ADR-16.2](decisions.md#adr-16-2)). It never relies on server-side `dimensions` support. For native-1024 models (BGE-M3) the truncation is a no-op. A returned vector shorter than `DIMENSION` raises `PermanentError("dimension_mismatch")` ([PORT-12.4](#port-12-4)).
+- <a id="adp-12-4"></a>**ADP-12.4 Status mapping.** Connection refused, 429 and 503 → `BackpressureError` (`Retry-After`, or 5 s). Read timeout → `TransientError`. Other 5xx → `TransientError`. 400 and 413 → `PermanentError("embedding_rejected")`. There is no authentication mapping, because the internal endpoint takes no API key ([XC-02.5](overview.md#xc-02-5)).
+- <a id="adp-12-5"></a>**ADP-12.5 Concurrency.** Ingest calls are bounded by the `embed` queue cap ([WF-04.8](ingestion.md#wf-04-8)). Query calls in api and mcp, which do not run through DBOS queues, are bounded per process by a semaphore of `embedding.QUERY_CONCURRENCY`. Query calls bypass the ingest queue, which gives them admission priority under the GPU sharing policy ([WF-04.9](ingestion.md#wf-04-9)); inside the `embed` server they share FIFO scheduling with ingest batches. There is no token bucket.
+- <a id="adp-12-6"></a>**ADP-12.6 Query path.** `embed_query` has a 2 s deadline and one retry, so [QRY-01](application.md#qry-01) can fall back to keyword in time. A per-process LRU cache (1,024 entries, keyed by model and normalised text) avoids re-embedding repeated queries.
+- <a id="adp-12-7"></a>**ADP-12.7 Readiness and warm-up.** `GET /v1/models` must list `embedding.MODEL`, the digest-bearing served name ([DEP-10.1](overview.md#dep-10-1)). Warm-up embeds the probe set of [DEP-10.5](overview.md#dep-10-5) and requires cosine ≥ 0.999 to the reference vectors after truncation. Until ready, calls raise `BackpressureError`, so lanes wait instead of failing ([SC-16.5](../success-criteria.md#sc-16-5)).
+- <a id="adp-12-8"></a>**ADP-12.8 Model reference and logging.** The adapter reports the `embedding_model` stamp of [XC-06.1](overview.md#xc-06-1), which [CMD-14](application.md#cmd-14) stamps on chunks. It logs the per-call metrics of [XC-03.3](overview.md#xc-03-3), never request text ([XC-02.7](overview.md#xc-02-7)).
+- <a id="adp-12-9"></a>**ADP-12.9 Status.** `status()` ([PORT-12.7](#port-12-7)) reads `GET /v1/models` and `GET /metrics` of the `embed` endpoint and the cached readiness and warm-up result of [ADP-12.7](#adp-12-7), and compares the served name with the `embedding` entry of `models.lock`. It sends no embedding request.
 
-Refs: [PORT-12](#port-12), [ADR-06](decisions.md#adr-06)
+Refs: [PORT-12](#port-12), [DEP-09](overview.md#dep-09), [DEP-10](overview.md#dep-10), [WF-04](ingestion.md#wf-04), [ADR-16](decisions.md#adr-16)
 
 <a id="adp-13"></a>
-### ADP-13 Local LLM client (Ollama, OpenAI-compatible)
+### ADP-13 Local LLM client (OpenAI-compatible)
 
 Implements [PORT-13](#port-13), module [MOD-06.4](overview.md#mod-06-4). Model, prompt and runtime parameters are owned by [LLM-01](ingestion.md#llm-01).
 
-- <a id="adp-13-1"></a>**ADP-13.1 Call.** `httpx` `POST {DOCSTORE_LLM__BASE_URL}/chat/completions` (default `http://ollama:11434/v1`, internal only, [DEP-07](overview.md#dep-07)) with `messages` (system, user), `temperature`, `seed`, `max_tokens` and `response_format = {"type": "json_schema", "json_schema": {"name": schema_name, "schema": json_schema, "strict": true}}`. The same request works against vLLM ([DEP-07.4](overview.md#dep-07-4)).
-- <a id="adp-13-2"></a>**ADP-13.2 Concurrency semaphore.** A process-wide `threading.BoundedSemaphore(DOCSTORE_QUEUES__LLM_CONCURRENCY)` guards calls, as defence in depth behind the llm queue cap of [WF-04](ingestion.md#wf-04) and `OLLAMA_NUM_PARALLEL` ([DEP-07.3](overview.md#dep-07-3)).
-- <a id="adp-13-3"></a>**ADP-13.3 Timeouts and errors.** The read timeout is `DOCSTORE_LLM__TIMEOUT_S` (default 180 s). Timeouts, connection errors and 5xx → `TransientError`. 400 (for example, a context overflow) → `PermanentError("llm_rejected")`. Invalid output → `InvalidLlmOutput` ([PORT-13.1](#port-13-1)).
-- <a id="adp-13-4"></a>**ADP-13.4 Startup checks.** Readiness calls `GET /api/tags` (Ollama) or `GET /v1/models` (vLLM) to confirm that the configured model is present, and records its digest for `model_digest`. A missing model fails readiness instead of failing every step.
+- <a id="adp-13-1"></a>**ADP-13.1 Call.** `httpx` `POST {llm.BASE_URL}/chat/completions` (default `http://llm:8000/v1`, vLLM, internal only, [DEP-07](overview.md#dep-07)) with `model` = `llm.MODEL`, `messages` (system, user), `temperature`, `seed`, `max_tokens` and `response_format = {"type": "json_schema", "json_schema": {"name": schema_name, "schema": json_schema, "strict": true}}`. The adapter merges `llm.EXTRA_BODY` (model- and runtime-specific parameters, for example `reasoning_effort`) into the request. It discards any reasoning content and never stores or logs it. The same request works against llama.cpp server and Ollama ([DEP-07.6](overview.md#dep-07-6)).
+- <a id="adp-13-2"></a>**ADP-13.2 Concurrency semaphore.** A process-wide `threading.BoundedSemaphore(DOCSTORE_QUEUES__LLM_CONCURRENCY)` guards calls, as defence in depth behind the `enrich` queue cap ([WF-04.3](ingestion.md#wf-04-3)) and the server's `--max-num-seqs` ([DEP-07.5](overview.md#dep-07-5)).
+- <a id="adp-13-3"></a>**ADP-13.3 Timeouts and errors.** The read timeout is `llm.TIMEOUT_S` (default 180 s). Connection refused, 429 and 503 → `BackpressureError` (`Retry-After`, or 30 s, [ING-15.4](ingestion.md#ing-15-4)). Timeouts and other 5xx → `TransientError`. 400 (for example, a context overflow) → `PermanentError("llm_rejected")`. Invalid output → `InvalidLlmOutput` ([PORT-13.1](#port-13-1)).
+- <a id="adp-13-4"></a>**ADP-13.4 Readiness and warm-up.** Readiness calls `GET /v1/models` and requires `llm.MODEL`, whose served name carries the weights digest ([LLM-01.3](ingestion.md#llm-01-3)); the digest is recorded for `model_digest`. Warm-up sends one fixed synthetic structured request and requires a schema-valid answer. Until ready, calls raise `BackpressureError`, so the `enrich` lane waits instead of failing every step ([SC-16.5](../success-criteria.md#sc-16-5)). This is the only mechanism that gates the `enrich` lane on the `llm` service: workers keep listening on every queue ([WF-04.1](ingestion.md#wf-04-1)), and stage 1 and search are unaffected ([DEP-01.6](overview.md#dep-01-6)).
+- <a id="adp-13-5"></a>**ADP-13.5 Status.** `status()` ([PORT-13.4](#port-13-4)) reads `GET /v1/models` and `GET /metrics` of the `llm` endpoint and the cached result of [ADP-13.4](#adp-13-4), and compares the served name with the `llm` entry of `models.lock`. It sends no completion request.
 
-Refs: [PORT-13](#port-13), [LLM-01](ingestion.md#llm-01), [DEP-07](overview.md#dep-07), [ADR-05](decisions.md#adr-05)
+Refs: [PORT-13](#port-13), [LLM-01](ingestion.md#llm-01), [DEP-07](overview.md#dep-07), [ADR-15](decisions.md#adr-15)
 
 <a id="adp-14"></a>
 ### ADP-14 Tika extractor
@@ -813,8 +834,8 @@ Refs: [PORT-16](#port-16), [ADR-07](decisions.md#adr-07)
 Implements [PORT-16](#port-16) for SharePoint document libraries in two modes with identical keys, module [MOD-06.6](overview.md#mod-06-6).
 
 - <a id="adp-19-1"></a>**ADP-19.1 Stable key in both modes.** `key = "sp:<site id>:<drive id>:<item id>"`. A source that starts from an export can therefore switch to live mode without re-creating documents.
-- <a id="adp-19-2"></a>**ADP-19.2 Export mode (PoC default).** The adapter reads a folder export produced by `deploy/scripts/export-sharepoint.ps1` (PnP.PowerShell). The export has the layout `<root>/<site>/<library>/<server-relative path>` plus `manifest.jsonl` with one line per file: `site_id`, `site_url`, `drive_id`, `item_id`, `path`, `created`, `modified`, `author`, `editor`, `etag`, and the library's custom columns under `fields`. Paging and cursor work as in [ADP-17.1](#adp-17-1), over manifest order, and the fingerprint is the `etag`. It needs no egress ([DEP-01.5](overview.md#dep-01-5)).
-- <a id="adp-19-3"></a>**ADP-19.3 Live mode (optional).** `msgraph-sdk` with app-only credentials (`Sites.Selected`, granted per site). Discovery uses `GET /drives/{drive-id}/root/delta` per library. The cursor holds the `@odata.deltaLink` per drive, or the `@odata.nextLink` mid-page. The fingerprint is `cTag`. The `deleted` facet produces tombstones. Library columns come from `listItem/fields` with `$expand`. Graph 429 and 503 map to `RateLimitedError` with `Retry-After`. The async SDK is bridged per [PORT-20.1](#port-20-1).
+- <a id="adp-19-2"></a>**ADP-19.2 Export mode (PoC default).** The adapter reads a folder export produced by `deploy/scripts/export-sharepoint.ps1` (PnP.PowerShell). The export has the layout `<root>/<site>/<library>/<server-relative path>` plus `manifest.jsonl` with one line per file: `site_id`, `site_url`, `drive_id`, `item_id`, `path`, `created`, `modified`, `author`, `editor`, `etag`, and the library's custom columns under `fields`. Paging and cursor work as in [ADP-17.1](#adp-17-1), over manifest order, and the fingerprint is the `etag`. It needs no egress ([DEP-01.5](overview.md#dep-01-5)) and is the PoC path ([F-01.4](../features.md#f-01-4)).
+- <a id="adp-19-3"></a>**ADP-19.3 Live mode (later).** Live mode requires Graph egress, which the zero-egress posture excludes ([DEP-01.5](overview.md#dep-01-5), [SCOPE-04.7](../README.md#scope-04-7)); it is described here so that the keys of [ADP-19.1](#adp-19-1) stay stable when it is enabled. `msgraph-sdk` with app-only credentials (`Sites.Selected`, granted per site). Discovery uses `GET /drives/{drive-id}/root/delta` per library. The cursor holds the `@odata.deltaLink` per drive, or the `@odata.nextLink` mid-page. The fingerprint is `cTag`. The `deleted` facet produces tombstones. Library columns come from `listItem/fields` with `$expand`. Graph 429 and 503 map to `BackpressureError` with `Retry-After`. The async SDK is bridged per [PORT-20.1](#port-20-1).
 - <a id="adp-19-4"></a>**ADP-19.4 Metadata.** In both modes, `source_metadata` carries `site_url`, `library`, `path` and the custom columns, which [DM-15](domain.md#dm-15) site and column rules match. Document-level SharePoint permissions are not imported in the PoC ([F-16](../features.md#f-16)).
 
 Refs: [PORT-16](#port-16)
@@ -855,12 +876,13 @@ Module [MOD-06.11](overview.md#mod-06-11), bound by the `test` profile ([ARCH-07
 |---|---|---|---|
 | <a id="adp-22-1"></a>ADP-22.1 | `InMemoryUnitOfWork` and in-memory repositories | [PORT-04](#port-04) to [PORT-09](#port-09) | Dict-backed, with copy-on-commit, version checks raising `ConcurrencyConflict`, and unique-key checks |
 | <a id="adp-22-2"></a>ADP-22.2 | `InMemoryIndex`, `InMemoryReadModel` | [PORT-10](#port-10), [PORT-11](#port-11) | Naive term-overlap keyword leg, cosine vector leg, and RRF. It applies the same `AccessScope` predicate, so application-level wall tests run without Postgres |
-| <a id="adp-22-3"></a>ADP-22.3 | `HashEmbedder` | [PORT-12](#port-12) | Deterministic 1024-d vectors from a text hash. It can be scripted to raise `RateLimitedError` on the n-th call |
+| <a id="adp-22-3"></a>ADP-22.3 | `HashEmbedder` | [PORT-12](#port-12) | Deterministic 1024-d vectors from a text hash. It can be scripted to raise `BackpressureError` on the n-th call |
 | <a id="adp-22-4"></a>ADP-22.4 | `ScriptedLlm` | [PORT-13](#port-13) | Returns queued responses or invalid JSON on demand, and records requests for prompt-contract assertions |
 | <a id="adp-22-5"></a>ADP-22.5 | `FixtureExtractor`, `FixtureOcr` | [PORT-14](#port-14), [PORT-15](#port-15) | Return canned `Extraction` and `OcrResult` values per fixture filename |
 | <a id="adp-22-6"></a>ADP-22.6 | `ListConnector` | [PORT-16](#port-16) | Pages over an in-memory list with an index cursor, and can be mutated between pages to test fingerprint changes |
 | <a id="adp-22-7"></a>ADP-22.7 | `MemoryBlobStore` | [PORT-17](#port-17) | Dict keyed by SHA-256 |
 | <a id="adp-22-8"></a>ADP-22.8 | `ImmediateWorkflowEngine` | [PORT-18](#port-18) | Records started specs and dedupes by ID. Tests drive the steps explicitly |
 | <a id="adp-22-9"></a>ADP-22.9 | `RecordingPublisher`, `FakeAuthenticator` | [PORT-19](#port-19), [PORT-03](#port-03) | Record events and access entries; map fixed tokens to principals |
+| <a id="adp-22-10"></a>ADP-22.10 | `FaultInjectingEndpoint` | model endpoints, used by [ADP-12](#adp-12) and [ADP-13](#adp-13) | An HTTP shim in the compose `test` profile, in front of `llm` and `embed`, that returns 503, 429 or connection resets at a configured rate and window. Used in chaos and induced tests ([SC-09.1](../success-criteria.md#sc-09-1)) |
 
-Refs: [PORT-04](#port-04), [PORT-05](#port-05), [PORT-11](#port-11), [PORT-12](#port-12), [PORT-13](#port-13), [PORT-16](#port-16), [PORT-18](#port-18), [XC-07](overview.md#xc-07)
+Refs: [PORT-04](#port-04), [PORT-05](#port-05), [PORT-11](#port-11), [PORT-12](#port-12), [PORT-13](#port-13), [PORT-16](#port-16), [PORT-18](#port-18), [XC-07](overview.md#xc-07), [SC-09](../success-criteria.md#sc-09)
